@@ -15,9 +15,8 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
     private let cacheDirectory: URL
     private let metadataDirectory: URL
     private var activeOperations: [URL: VideoDataOperation] = [:]
-    private let accessQueue = DispatchQueue(label: "com.yourcompany.videocachemanager.accessqueue")
-    
-    public var maxCacheSizeInBytes: Int64 = 200 * 1024 * 1024 // 200 MB
+    private let accessQueue = DispatchQueue(label: "com.yourcompany.videocachemanager.accessqueue")    
+    public var maxCacheSizeInBytes: Int64 = 500 * 1024 * 1024 // 500 MB
     private let preferredCacheFolderName = "AdvancedVideoCache_v2" // Increment version to avoid old cache conflicts
     
     private override init() {

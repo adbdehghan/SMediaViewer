@@ -70,12 +70,25 @@ public final class MediaView: UIView {
          }
      }
     
-    func reset() {
+    public func reset() {
         switch currentState {
-        case .video(_, let player, let item, _):
+        case .video(let url, let player, let item, _):
             player.pause()
+            
+            let currentTime = player.currentTime()
+            // Only save if the time is valid and meaningful.
+            if currentTime.isValid && !currentTime.isIndefinite && currentTime.seconds > 1 {
+                // --- Use the Actor to save the time ---
+                // We create a new Task to call the async `setTime` method from this sync context.
+                // This is a "fire-and-forget" operation, which is fine for caching.
+                Task {
+                    print("💾 Saving playback time for \(url.lastPathComponent): \(currentTime.seconds)s")
+                    await PlaybackTimeCache.shared.setTime(currentTime, for: url)
+                }
+            }
+            
             item.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), context: KVO.playerItemStatusContext)
-            print("✅ KVO observer cleanly removed for video.")
+            
         case .image:
             imageView.sd_cancelCurrentImageLoad()
         case .idle:
@@ -84,10 +97,8 @@ public final class MediaView: UIView {
         
         playerLayer?.removeFromSuperlayer()
         playerLayer = nil
-        
         imageView.image = nil
         imageView.isHidden = true
-        
         currentState = .idle
     }
     
@@ -116,32 +127,41 @@ public final class MediaView: UIView {
     }
     
     private func setupVideo(for url: URL) {
-        guard let assetURL = VideoCacheManager.shared.assetURL(for: url) else {
-            print("❌ Could not create custom scheme URL for video.")
-            displayErrorIcon()
-            return
-        }
-        
-        let asset = AVURLAsset(url: assetURL)
-        asset.resourceLoader.setDelegate(VideoCacheManager.shared, queue: resourceLoaderDelegateQueue)
-        
-        let playerItem = AVPlayerItem(asset: asset)
-        playerItem.addObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), options: [.old, .new], context: KVO.playerItemStatusContext)
-        
-        let queuePlayer = AVQueuePlayer(playerItem: playerItem)
-        let playerLooper = AVPlayerLooper(player: queuePlayer, templateItem: playerItem)
-        
-        let newPlayerLayer = AVPlayerLayer(player: queuePlayer)
-        newPlayerLayer.frame = self.bounds
-        newPlayerLayer.videoGravity = .resizeAspectFill
-        self.layer.insertSublayer(newPlayerLayer, at: 0)
-        self.playerLayer = newPlayerLayer
-        
-        queuePlayer.volume = 0
-        
-        
-        currentState = .video(url: url, player: queuePlayer, item: playerItem, looper: playerLooper)
-    }
+         guard let assetURL = VideoCacheManager.shared.assetURL(for: url) else {
+             displayErrorIcon()
+             return
+         }
+
+         let asset = AVURLAsset(url: assetURL)
+         asset.resourceLoader.setDelegate(VideoCacheManager.shared, queue: resourceLoaderDelegateQueue)
+         
+         let playerItem = AVPlayerItem(asset: asset)
+         playerItem.addObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), options: [.old, .new], context: KVO.playerItemStatusContext)
+         
+         let queuePlayer = AVQueuePlayer(playerItem: playerItem)
+         let playerLooper = AVPlayerLooper(player: queuePlayer, templateItem: playerItem)
+         
+         // --- Use the Actor to restore the time ---
+         // Create a Task to asynchronously fetch the time.
+         // Once fetched, hop back to the @MainActor to safely perform the seek operation.
+         Task { @MainActor in
+             if let savedTime = await PlaybackTimeCache.shared.getTime(for: url) {
+                 print("▶️ Found saved playback time for \(url.lastPathComponent): \(savedTime.seconds)s. Seeking...")
+                 // This code runs on the main actor, so it's safe to interact with the player.
+                 await queuePlayer.seek(to: savedTime, toleranceBefore: .zero, toleranceAfter: .zero)
+             }
+         }
+         
+         let newPlayerLayer = AVPlayerLayer(player: queuePlayer)
+         newPlayerLayer.frame = self.bounds
+         newPlayerLayer.videoGravity = .resizeAspectFill
+         self.layer.insertSublayer(newPlayerLayer, at: 0)
+         self.playerLayer = newPlayerLayer
+         
+         queuePlayer.volume = 0
+         
+         currentState = .video(url: url, player: queuePlayer, item: playerItem, looper: playerLooper)
+     }
     
     // MARK: - KVO
     public override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
