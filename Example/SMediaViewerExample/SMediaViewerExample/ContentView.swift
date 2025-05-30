@@ -21,22 +21,40 @@ struct ContentView: View {
         URL(string: "https://picsum.photos/id/30/1280/720")!
     ]
 
-    var body: some View {
-        NavigationView {
-            List {
-                ForEach(mediaURLs, id: \.self) { url in
-                    // Use your new SwiftUI-compatible view
-                    CachingMediaView(url: url)
-                        .aspectRatio(16/9, contentMode: .fit) // Set a frame or aspect ratio
-                        .clipShape(RoundedRectangle(cornerRadius: 12)) // Add some styling
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                }
-            }
-            .listStyle(.plain)
-            .navigationTitle("Caching Media Feed")
-        }
-    }
+    @State private var visibleURL: URL?
+
+     var body: some View {
+         NavigationView {
+             ScrollView {
+                 LazyVStack(spacing: 20) { // LazyVStack is crucial for performance
+                     ForEach(mediaURLs, id: \.self) { url in
+                         // Pass a binding that resolves to true only if this is the visible URL
+                         let isPlaying = Binding<Bool>(
+                             get: { self.visibleURL == url },
+                             set: { _ in }
+                         )
+                         
+                         CachingMediaView(url: url, isPlaying: isPlaying)
+                             .aspectRatio(16/9, contentMode: .fit)
+                             .clipShape(RoundedRectangle(cornerRadius: 12))
+                             .onAppear {
+                                 // When this view appears, set it as the one that should be playing.
+                                 self.visibleURL = url
+                             }
+                             .onDisappear {
+                                 // If this view disappears and is still the "visible" one,
+                                 // clear the state so nothing plays.
+                                 if self.visibleURL == url {
+                                     self.visibleURL = nil
+                                 }
+                             }
+                     }
+                 }
+                 .padding()
+             }
+             .navigationTitle("Visible Playback Feed")
+         }
+     }
 }
 
 #Preview {

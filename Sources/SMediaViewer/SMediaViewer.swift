@@ -13,6 +13,14 @@ public final class MediaView: UIView {
     // MARK: - Properties
     private var currentState: MediaState = .idle
     private let resourceLoaderDelegateQueue = DispatchQueue(label: "com.yourcompany.mediaview.resourceloader.queue")
+    public var currentURL: URL? {
+            switch currentState {
+            case .image(let url), .video(let url, _, _, _):
+                return url
+            case .idle:
+                return nil
+            }
+        }
     
     private lazy var imageView: UIImageView = {
         let iv = UIImageView()
@@ -47,20 +55,20 @@ public final class MediaView: UIView {
     }
     
     // MARK: - Public API
-    func configure(with url: URL) {
-        reset()
-        
-        let pathExtension = url.pathExtension.lowercased()
-        
-        if ["mp4", "mov", "m4v"].contains(pathExtension) {
-            setupVideo(for: url)
-        } else if ["jpg", "jpeg", "png", "gif", "webp"].contains(pathExtension) {
-            setupImage(for: url)
-        } else {
-            print("⚠️ Unknown media type for URL: \(url.lastPathComponent)")
-            displayErrorIcon()
-        }
-    }
+    public func configure(with url: URL) {
+         reset()
+
+         let pathExtension = url.pathExtension.lowercased()
+
+         if ["mp4", "mov", "m4v"].contains(pathExtension) {
+             setupVideo(for: url)
+         } else if ["jpg", "jpeg", "png", "gif", "webp"].contains(pathExtension) {
+             setupImage(for: url)
+         } else {
+             print("⚠️ Unknown media type for URL: \(url.lastPathComponent)")
+             displayErrorIcon()
+         }
+     }
     
     func reset() {
         switch currentState {
@@ -93,6 +101,20 @@ public final class MediaView: UIView {
                               options: [.retryFailed, .progressiveLoad, .decodeFirstFrameOnly])
     }
     
+    public func play() {
+        // Play the video if the current state is a video
+        if case .video(_, let player, _, _) = currentState {
+            player.play()
+        }
+    }
+    
+    public func pause() {
+        // Pause the video if the current state is a video
+        if case .video(_, let player, _, _) = currentState {
+            player.pause()
+        }
+    }
+    
     private func setupVideo(for url: URL) {
         guard let assetURL = VideoCacheManager.shared.assetURL(for: url) else {
             print("❌ Could not create custom scheme URL for video.")
@@ -116,7 +138,7 @@ public final class MediaView: UIView {
         self.playerLayer = newPlayerLayer
         
         queuePlayer.volume = 0
-        queuePlayer.play()
+        
         
         currentState = .video(url: url, player: queuePlayer, item: playerItem, looper: playerLooper)
     }
