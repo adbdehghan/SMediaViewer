@@ -12,7 +12,7 @@ public class MediaView: UIView {
           iv.backgroundColor = .secondarySystemBackground
           return iv
       }()
-
+      private var isObservingPlayerItemStatus = false
       private var player: AVPlayer?
       private var playerLayer: AVPlayerLayer?
       public var currentOriginalURL: URL?
@@ -86,9 +86,10 @@ public class MediaView: UIView {
 
           let playerItem = AVPlayerItem(asset: asset!)
           playerItem.addObserver(self,
-                                 forKeyPath: #keyPath(AVPlayerItem.status),
-                                 options: [.old, .new],
-                                 context: KVO.playerItemStatusContext)
+                                  forKeyPath: #keyPath(AVPlayerItem.status),
+                                  options: [.old, .new],
+                                  context: KVO.playerItemStatusContext)
+          isObservingPlayerItemStatus = true
           
           let queuePlayer = AVQueuePlayer(playerItem: playerItem)
           player = queuePlayer
@@ -174,19 +175,22 @@ public class MediaView: UIView {
 
       private func cleanUpPlayer() {
           player?.pause()
-          if let currentItem = player?.currentItem, player != nil {
-              currentItem.removeObserver(self,
-                                         forKeyPath: #keyPath(AVPlayerItem.status),
-                                         context: KVO.playerItemStatusContext)
-          }
-          
-          player = nil
-          playerLooper = nil
-          playerLayer?.removeFromSuperlayer()
-          playerLayer = nil
-          
-          asset?.resourceLoader.setDelegate(nil, queue: nil)
-          asset = nil
+
+           // Only try to remove the observer if the flag is true
+           if let currentItem = player?.currentItem, isObservingPlayerItemStatus {
+               currentItem.removeObserver(self,
+                                          forKeyPath: #keyPath(AVPlayerItem.status),
+                                          context: KVO.playerItemStatusContext)
+               // Immediately set the flag to false after removing
+               isObservingPlayerItemStatus = false
+           }
+
+           player = nil
+           playerLooper = nil
+           playerLayer?.removeFromSuperlayer()
+           playerLayer = nil
+           asset?.resourceLoader.setDelegate(nil, queue: nil)
+           asset = nil
       }
 
       func reset() {
