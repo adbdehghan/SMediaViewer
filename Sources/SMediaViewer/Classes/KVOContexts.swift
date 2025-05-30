@@ -5,8 +5,6 @@
 //  Created by Adib.
 //
 
-import Foundation // Or just leave it empty if only using for the static var
-
 import Foundation
 
 enum KVO { // Renamed for clarity, use any namespace you prefer

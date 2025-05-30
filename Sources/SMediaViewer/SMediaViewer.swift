@@ -1,219 +1,196 @@
+import UIKit
 import AVFoundation
 import SDWebImage
-import UIKit
-import UniformTypeIdentifiers
 
-public class MediaView: UIView {
-    private let imageView: UIImageView = {
-          let iv = UIImageView()
-          iv.contentMode = .scaleAspectFill
-          iv.clipsToBounds = true
-          iv.isHidden = true
-          iv.backgroundColor = .secondarySystemBackground
-          return iv
-      }()
-      private var isObservingPlayerItemStatus = false
-      private var player: AVPlayer?
-      private var playerLayer: AVPlayerLayer?
-      public var currentOriginalURL: URL?
-      private var playerLooper: AVPlayerLooper?
-      private var asset: AVURLAsset?
+final class MediaView: UIView {
+    // MARK: - State Machine
+    private enum MediaState {
+        case idle
+        case image(url: URL)
+        case video(url: URL, player: AVPlayer, item: AVPlayerItem, looper: AVPlayerLooper)
+    }
+    
+    // MARK: - Properties
+    private var currentState: MediaState = .idle
+    private let resourceLoaderDelegateQueue = DispatchQueue(label: "com.yourcompany.mediaview.resourceloader.queue")
 
-      private let resourceLoaderDelegateQueue = DispatchQueue(label: "com.yourcompany.mediaview.resourceloader.queue")
+    private lazy var imageView: UIImageView = {
+        let iv = UIImageView()
+        iv.contentMode = .scaleAspectFill
+        iv.clipsToBounds = true
+        iv.backgroundColor = .secondarySystemBackground
+        return iv
+    }()
 
-      override init(frame: CGRect) {
-          super.init(frame: frame)
-          setupSubviews()
-      }
+    private var playerLayer: AVPlayerLayer?
 
-      required init?(coder: NSCoder) {
-          super.init(coder: coder)
-          setupSubviews()
-      }
+    // MARK: - Lifecycle
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupSubviews()
+    }
 
-      private func setupSubviews() {
-          addSubview(imageView)
-          imageView.translatesAutoresizingMaskIntoConstraints = false
-          NSLayoutConstraint.activate([
-              imageView.topAnchor.constraint(equalTo: topAnchor),
-              imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
-              imageView.bottomAnchor.constraint(equalTo: bottomAnchor),
-              imageView.trailingAnchor.constraint(equalTo: trailingAnchor),
-          ])
-      }
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupSubviews()
+    }
 
-     public override func layoutSubviews() {
-          super.layoutSubviews()
-          playerLayer?.frame = bounds
-      }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        playerLayer?.frame = bounds
+    }
+    
+    deinit {
+        // Cleanup is handled by willMove(toWindow:), prepareForReuse, and dismantleUIView.
+        // deinit remains empty of main-actor calls.
+        print("🗑️ MediaView deinit sequence completed.")
+    }
 
-      func configure(with url: URL) {
-          reset()
-          self.currentOriginalURL = url
-          let pathExtension = url.pathExtension.lowercased()
+    // MARK: - Public API
+    func configure(with url: URL) {
+        reset()
 
-          if ["mp4", "mov", "m4v"].contains(pathExtension) {
-              imageView.isHidden = true
-              playerLayer?.isHidden = false
-              setupAdvancedVideoPlayer(for: url)
-          } else if ["jpg", "jpeg", "png", "gif", "webp"].contains(pathExtension) {
-              playerLayer?.isHidden = true
-              imageView.isHidden = false
-              imageView.sd_imageIndicator = SDWebImageActivityIndicator.gray
-              imageView.sd_setImage(with: url,
-                                    placeholderImage: UIImage(systemName: "photo"),
-                                    options: [.retryFailed, .progressiveLoad, .decodeFirstFrameOnly],
-                                    completed: nil)
-          } else {
-              imageView.isHidden = false
-              playerLayer?.isHidden = true
-              imageView.image = UIImage(systemName: "questionmark.diamond")
-              print("⚠️ Unknown media type for URL: \(url.lastPathComponent)")
-          }
-      }
+        let pathExtension = url.pathExtension.lowercased()
 
-      private func setupAdvancedVideoPlayer(for originalVideoURL: URL) {
-          cleanUpPlayer()
+        if ["mp4", "mov", "m4v"].contains(pathExtension) {
+            setupVideo(for: url)
+        } else if ["jpg", "jpeg", "png", "gif", "webp"].contains(pathExtension) {
+            setupImage(for: url)
+        } else {
+            print("⚠️ Unknown media type for URL: \(url.lastPathComponent)")
+            displayErrorIcon()
+        }
+    }
 
-          guard let assetURLWithCustomScheme = VideoCacheManager.shared.assetURL(for: originalVideoURL) else {
-              print("❌ Could not create custom scheme URL for video: \(originalVideoURL.lastPathComponent).")
-              DispatchQueue.main.async { self.displayErrorIcon() }
-              return
-          }
-          
-          asset = AVURLAsset(url: assetURLWithCustomScheme)
-          asset!.resourceLoader.setDelegate(VideoCacheManager.shared, queue: resourceLoaderDelegateQueue)
+    func reset() {
+        switch currentState {
+        case .video(_, let player, let item, _):
+            player.pause()
+            item.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), context: KVO.playerItemStatusContext)
+            print("✅ KVO observer cleanly removed for video.")
+        case .image:
+            imageView.sd_cancelCurrentImageLoad()
+        case .idle:
+            break
+        }
+        
+        playerLayer?.removeFromSuperlayer()
+        playerLayer = nil
+        
+        imageView.image = nil
+        imageView.isHidden = true
+        
+        currentState = .idle
+    }
 
-          let playerItem = AVPlayerItem(asset: asset!)
-          playerItem.addObserver(self,
-                                  forKeyPath: #keyPath(AVPlayerItem.status),
-                                  options: [.old, .new],
-                                  context: KVO.playerItemStatusContext)
-          isObservingPlayerItemStatus = true
-          
-          let queuePlayer = AVQueuePlayer(playerItem: playerItem)
-          player = queuePlayer
-          playerLooper = AVPlayerLooper(player: queuePlayer, templateItem: playerItem)
+    // MARK: - State Setup
+    private func setupImage(for url: URL) {
+        currentState = .image(url: url)
+        imageView.isHidden = false
+        imageView.sd_imageIndicator = SDWebImageActivityIndicator.gray
+        imageView.sd_setImage(with: url,
+                              placeholderImage: UIImage(systemName: "photo"),
+                              options: [.retryFailed, .progressiveLoad, .decodeFirstFrameOnly])
+    }
 
-          playerLayer = AVPlayerLayer(player: player)
-          playerLayer!.frame = bounds
-          playerLayer!.videoGravity = .resizeAspectFill
-          layer.insertSublayer(playerLayer!, at: 0)
+    private func setupVideo(for url: URL) {
+        guard let assetURL = VideoCacheManager.shared.assetURL(for: url) else {
+            print("❌ Could not create custom scheme URL for video.")
+            displayErrorIcon()
+            return
+        }
 
-          player?.volume = 0
-          player?.play()
-      }
-      
-      private func displayErrorIcon() {
-          self.imageView.isHidden = false
-          self.playerLayer?.isHidden = true
-          self.imageView.image = UIImage(systemName: "xmark.octagon.fill")?.withRenderingMode(.alwaysTemplate)
-          self.imageView.tintColor = .systemGray
-          self.imageView.contentMode = .center
-      }
+        let asset = AVURLAsset(url: assetURL)
+        asset.resourceLoader.setDelegate(VideoCacheManager.shared, queue: resourceLoaderDelegateQueue)
+        
+        let playerItem = AVPlayerItem(asset: asset)
+        playerItem.addObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), options: [.old, .new], context: KVO.playerItemStatusContext)
+        
+        let queuePlayer = AVQueuePlayer(playerItem: playerItem)
+        let playerLooper = AVPlayerLooper(player: queuePlayer, templateItem: playerItem)
+        
+        let newPlayerLayer = AVPlayerLayer(player: queuePlayer)
+        newPlayerLayer.frame = self.bounds
+        newPlayerLayer.videoGravity = .resizeAspectFill
+        self.layer.insertSublayer(newPlayerLayer, at: 0)
+        self.playerLayer = newPlayerLayer
+        
+        queuePlayer.volume = 0
+        queuePlayer.play()
+        
+        currentState = .video(url: url, player: queuePlayer, item: playerItem, looper: playerLooper)
+    }
+    
+    // MARK: - KVO
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
+        // 1. Perform the minimal, nonisolated check first.
+        guard context == KVO.playerItemStatusContext, keyPath == #keyPath(AVPlayerItem.status) else {
+            super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
+            return
+        }
 
-      // `observeValue` signature remains nonisolated.
-      public override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
-          guard context == KVO.playerItemStatusContext, keyPath == #keyPath(AVPlayerItem.status) else {
-              super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
-              return
-          }
+        // 2. Extract Sendable values to pass to the main actor.
+        let newStatusNumber = change?[.newKey] as? NSNumber
+        guard let observedAnyObject = object as AnyObject? else { return }
+        let observedObjectIdentifier = ObjectIdentifier(observedAnyObject)
+        
+        // 3. Dispatch all further logic to the main actor.
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            
+            // 4. Perform ALL state-dependent checks and work inside the MainActor context.            
+            guard case .video(_, _, let currentItem, _) = self.currentState,
+                  ObjectIdentifier(currentItem) == observedObjectIdentifier else {
+                // This KVO notification is for an old player item we are no longer tracking. Ignore it.
+                return
+            }
+            
+            let status: AVPlayerItem.Status
+            if let statusNum = newStatusNumber {
+                status = AVPlayerItem.Status(rawValue: statusNum.intValue)!
+            } else {
+                status = .unknown
+            }
+            
+            switch status {
+            case .readyToPlay:
+                print("📺 Player item ready to play.")
+                self.playerLayer?.isHidden = false
+            case .failed:
+                print("❌ Player item failed: \(currentItem.error?.localizedDescription ?? "Unknown error")")
+                self.displayErrorIcon()
+            case .unknown:
+                print("❔ Player item status is unknown.")
+            @unknown default:
+                break
+            }
+        }
+    }
+    
+    // MARK: - Helpers
+    private func setupSubviews() {
+        addSubview(imageView)
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            imageView.topAnchor.constraint(equalTo: topAnchor),
+            imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            imageView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            imageView.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+    }
+    
+    private func displayErrorIcon() {
+        self.imageView.isHidden = false
+        self.playerLayer?.isHidden = true
+        self.imageView.image = UIImage(systemName: "xmark.octagon.fill")?.withRenderingMode(.alwaysTemplate)
+        self.imageView.tintColor = .systemGray
+        self.imageView.contentMode = .center
+    }
 
-          // Extract Sendable data before dispatching.
-          // NSNumber is Sendable.
-          let newStatusNumber = change?[.newKey] as? NSNumber
-          
-          // ObjectIdentifier is Sendable. We use it to identify the object later.
-          // Ensure `object` is an AnyObject before creating ObjectIdentifier.
-          // KVO's `object` parameter is `Any?`, which could be a non-class type if KVO is used differently,
-          // but for AVPlayerItem, it will be an AVPlayerItem (NSObject subclass).
-          guard let observedAnyObject = object as AnyObject? else {
-              // If object is nil or not an AnyObject, we can't get an ObjectIdentifier.
-              // This case should ideally not happen for AVPlayerItem KVO.
-              return
-          }
-          let observedObjectIdentifier = ObjectIdentifier(observedAnyObject)
-
-          // Dispatch to the main actor using Task for modern concurrency.
-          Task { @MainActor [weak self] in // Capture self weakly. newStatusNumber and observedObjectIdentifier are Sendable and captured by value.
-              guard let self = self else { return }
-
-              // On the MainActor:
-              // 1. Verify that the KVO notification pertains to our *current* player item
-              //    by comparing ObjectIdentifiers. This avoids acting on stale notifications
-              //    for player items that might have been replaced.
-              guard let currentPlayerItem = self.player?.currentItem, // Access self.player.currentItem on MainActor
-                    ObjectIdentifier(currentPlayerItem) == observedObjectIdentifier else {
-                  // The KVO notification is for an AVPlayerItem that is no longer
-                  // the current item of our player, or the player/item is nil. Ignore it.
-                  return
-              }
-
-              // 2. Now that we've confirmed it's our current item, we can safely use `currentPlayerItem`.
-              let status: AVPlayerItem.Status
-              if let statusNum = newStatusNumber {
-                  status = AVPlayerItem.Status(rawValue: statusNum.intValue)!
-              } else {
-                  status = .unknown
-              }
-              
-              switch status {
-              case .readyToPlay:
-                  print("📺 Player item ready to play for \(self.currentOriginalURL?.lastPathComponent ?? "N/A")")
-              case .failed:
-                  // Access `currentPlayerItem.error` safely on the MainActor.
-                  let error = currentPlayerItem.error
-                  print("❌ Player item failed for \(self.currentOriginalURL?.lastPathComponent ?? "N/A"). Error: \(error?.localizedDescription ?? "Unknown error")")
-                  self.displayErrorIcon()
-              case .unknown:
-                  print("❔ Player item status unknown for \(self.currentOriginalURL?.lastPathComponent ?? "N/A")")
-              @unknown default:
-                  break
-              }
-          }
-      }
-
-      private func cleanUpPlayer() {
-          player?.pause()
-
-           // Only try to remove the observer if the flag is true
-           if let currentItem = player?.currentItem, isObservingPlayerItemStatus {
-               currentItem.removeObserver(self,
-                                          forKeyPath: #keyPath(AVPlayerItem.status),
-                                          context: KVO.playerItemStatusContext)
-               // Immediately set the flag to false after removing
-               isObservingPlayerItemStatus = false
-           }
-
-           player = nil
-           playerLooper = nil
-           playerLayer?.removeFromSuperlayer()
-           playerLayer = nil
-           asset?.resourceLoader.setDelegate(nil, queue: nil)
-           asset = nil
-      }
-
-      func reset() {
-          imageView.sd_cancelCurrentImageLoad()
-          imageView.image = nil
-          imageView.isHidden = true
-          imageView.contentMode = .scaleAspectFill
-
-          cleanUpPlayer()
-          
-          currentOriginalURL = nil
-      }
-
-      public override func willMove(toWindow newWindow: UIWindow?) {
-          super.willMove(toWindow: newWindow)
-          if newWindow == nil {
-              print("♻️ MediaView for \(currentOriginalURL?.lastPathComponent ?? "N/A") is being removed from window. Calling reset.")
-              reset()
-          }
-      }
-
-      deinit {
-          print("🗑️ MediaView deinit sequence completed for URL: \(currentOriginalURL?.lastPathComponent ?? "N/A")")
-      }
-  }
-
+    override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        if newWindow == nil {
+            reset()
+        }
+    }
+}
