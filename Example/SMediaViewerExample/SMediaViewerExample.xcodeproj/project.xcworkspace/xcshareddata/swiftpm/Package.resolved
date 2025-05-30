@@ -1,0 +1,24 @@
+{
+  "originHash" : "45d01ddb6780f94bd27756c1bbcf1906e4b5f56a12d3a9580b38d2884d501b84",
+  "pins" : [
+    {
+      "identity" : "sdwebimage",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/SDWebImage/SDWebImage.git",
+      "state" : {
+        "revision" : "cac9a55a3ae92478a2c95042dcc8d9695d2129ca",
+        "version" : "5.21.0"
+      }
+    },
+    {
+      "identity" : "smediaviewer",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/adbdehghan/SMediaViewer",
+      "state" : {
+        "branch" : "main",
+        "revision" : "1443f62e4a9d88f77835f61e26d058469c047f89"
+      }
+    }
+  ],
+  "version" : 3
+}
