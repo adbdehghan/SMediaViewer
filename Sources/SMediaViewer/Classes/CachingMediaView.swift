@@ -8,9 +8,7 @@
 import SwiftUI
 import UIKit
 
-/// A SwiftUI view that wraps the caching `MediaView` for easy integration.
 public struct CachingMediaView: UIViewRepresentable {
-    /// The URL of the media to display.
     public let url: URL
 
     public init(url: URL) {
@@ -18,21 +16,19 @@ public struct CachingMediaView: UIViewRepresentable {
     }
 
     public func makeUIView(context: Context) -> MediaView {
-        // Create the underlying MediaView instance.
         return MediaView()
     }
 
     public func updateUIView(_ uiView: MediaView, context: Context) {
-        // Update the view with the new URL, but only if it has changed.
-        // This prevents redundant reloads when the view updates for other reasons.
-        if uiView.currentOriginalURL != url {
-            uiView.configure(with: url)
-        }
+        // Using the state enum means configure() already handles resetting,
+        // so we don't need to check the URL here if we always call configure.
+        uiView.configure(with: url)
     }
 
+    // This is the crucial cleanup hook for SwiftUI.
+    // It is called on the main actor when SwiftUI removes the view.
     public static func dismantleUIView(_ uiView: MediaView, coordinator: ()) {
-        // Called when the view is removed from the hierarchy.
-        // This is the ideal place to trigger cleanup.
+        print("Dismantling MediaView for SwiftUI. Calling reset.")
         uiView.reset()
     }
 }

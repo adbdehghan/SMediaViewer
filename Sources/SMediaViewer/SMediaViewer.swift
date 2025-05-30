@@ -2,7 +2,7 @@ import UIKit
 import AVFoundation
 import SDWebImage
 
-final class MediaView: UIView {
+public final class MediaView: UIView {
     // MARK: - State Machine
     private enum MediaState {
         case idle
@@ -13,7 +13,7 @@ final class MediaView: UIView {
     // MARK: - Properties
     private var currentState: MediaState = .idle
     private let resourceLoaderDelegateQueue = DispatchQueue(label: "com.yourcompany.mediaview.resourceloader.queue")
-
+    
     private lazy var imageView: UIImageView = {
         let iv = UIImageView()
         iv.contentMode = .scaleAspectFill
@@ -21,21 +21,21 @@ final class MediaView: UIView {
         iv.backgroundColor = .secondarySystemBackground
         return iv
     }()
-
+    
     private var playerLayer: AVPlayerLayer?
-
+    
     // MARK: - Lifecycle
     override init(frame: CGRect) {
         super.init(frame: frame)
         setupSubviews()
     }
-
+    
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setupSubviews()
     }
-
-    override func layoutSubviews() {
+    
+    public override func layoutSubviews() {
         super.layoutSubviews()
         playerLayer?.frame = bounds
     }
@@ -45,13 +45,13 @@ final class MediaView: UIView {
         // deinit remains empty of main-actor calls.
         print("🗑️ MediaView deinit sequence completed.")
     }
-
+    
     // MARK: - Public API
     func configure(with url: URL) {
         reset()
-
+        
         let pathExtension = url.pathExtension.lowercased()
-
+        
         if ["mp4", "mov", "m4v"].contains(pathExtension) {
             setupVideo(for: url)
         } else if ["jpg", "jpeg", "png", "gif", "webp"].contains(pathExtension) {
@@ -61,7 +61,7 @@ final class MediaView: UIView {
             displayErrorIcon()
         }
     }
-
+    
     func reset() {
         switch currentState {
         case .video(_, let player, let item, _):
@@ -82,7 +82,7 @@ final class MediaView: UIView {
         
         currentState = .idle
     }
-
+    
     // MARK: - State Setup
     private func setupImage(for url: URL) {
         currentState = .image(url: url)
@@ -92,14 +92,14 @@ final class MediaView: UIView {
                               placeholderImage: UIImage(systemName: "photo"),
                               options: [.retryFailed, .progressiveLoad, .decodeFirstFrameOnly])
     }
-
+    
     private func setupVideo(for url: URL) {
         guard let assetURL = VideoCacheManager.shared.assetURL(for: url) else {
             print("❌ Could not create custom scheme URL for video.")
             displayErrorIcon()
             return
         }
-
+        
         let asset = AVURLAsset(url: assetURL)
         asset.resourceLoader.setDelegate(VideoCacheManager.shared, queue: resourceLoaderDelegateQueue)
         
@@ -122,13 +122,13 @@ final class MediaView: UIView {
     }
     
     // MARK: - KVO
-    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
+    public override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
         // 1. Perform the minimal, nonisolated check first.
         guard context == KVO.playerItemStatusContext, keyPath == #keyPath(AVPlayerItem.status) else {
             super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
             return
         }
-
+        
         // 2. Extract Sendable values to pass to the main actor.
         let newStatusNumber = change?[.newKey] as? NSNumber
         guard let observedAnyObject = object as AnyObject? else { return }
@@ -138,7 +138,7 @@ final class MediaView: UIView {
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             
-            // 4. Perform ALL state-dependent checks and work inside the MainActor context.            
+            // 4. Perform ALL state-dependent checks and work inside the MainActor context.
             guard case .video(_, _, let currentItem, _) = self.currentState,
                   ObjectIdentifier(currentItem) == observedObjectIdentifier else {
                 // This KVO notification is for an old player item we are no longer tracking. Ignore it.
@@ -186,8 +186,8 @@ final class MediaView: UIView {
         self.imageView.tintColor = .systemGray
         self.imageView.contentMode = .center
     }
-
-    override func willMove(toWindow newWindow: UIWindow?) {
+    
+    public override func willMove(toWindow newWindow: UIWindow?) {
         super.willMove(toWindow: newWindow)
         if newWindow == nil {
             reset()
