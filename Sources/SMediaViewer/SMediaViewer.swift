@@ -3,7 +3,7 @@ import SDWebImage
 import UIKit
 import UniformTypeIdentifiers
 
-class MediaView: UIView {
+public class MediaView: UIView {
     private let imageView: UIImageView = {
           let iv = UIImageView()
           iv.contentMode = .scaleAspectFill
@@ -15,7 +15,7 @@ class MediaView: UIView {
 
       private var player: AVPlayer?
       private var playerLayer: AVPlayerLayer?
-      private var currentOriginalURL: URL?
+      public var currentOriginalURL: URL?
       private var playerLooper: AVPlayerLooper?
       private var asset: AVURLAsset?
 
@@ -42,7 +42,7 @@ class MediaView: UIView {
           ])
       }
 
-      override func layoutSubviews() {
+     public override func layoutSubviews() {
           super.layoutSubviews()
           playerLayer?.frame = bounds
       }
@@ -112,7 +112,7 @@ class MediaView: UIView {
       }
 
       // `observeValue` signature remains nonisolated.
-      override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
+      public override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
           guard context == KVO.playerItemStatusContext, keyPath == #keyPath(AVPlayerItem.status) else {
               super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
               return
@@ -200,7 +200,7 @@ class MediaView: UIView {
           currentOriginalURL = nil
       }
 
-      override func willMove(toWindow newWindow: UIWindow?) {
+      public override func willMove(toWindow newWindow: UIWindow?) {
           super.willMove(toWindow: newWindow)
           if newWindow == nil {
               print("♻️ MediaView for \(currentOriginalURL?.lastPathComponent ?? "N/A") is being removed from window. Calling reset.")
