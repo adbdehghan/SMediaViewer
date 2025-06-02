@@ -151,23 +151,14 @@ public final class MediaView: UIView {
                     if let localHLSURL = HLSAssetManager.shared.getLocalAssetURL(for: url) {
                         // Check if the URL points to a .movpkg package
                         if localHLSURL.pathExtension.lowercased() == "movpkg" {
-                            // Locate the .m3u8 file inside the .movpkg package
-                            let fileManager = FileManager.default
-                            guard let movpkgContents = try? fileManager.contentsOfDirectory(at: localHLSURL, includingPropertiesForKeys: nil, options: []) else {
-                                print("Unable to access .movpkg contents")
-                                displayErrorIcon()
-                                return
-                            }
-                            
-                            // Find the .m3u8 file
-                            let m3u8URL = movpkgContents.first { $0.pathExtension.lowercased() == "m3u8" }
-                            guard let playlistURL = m3u8URL else {
+                            // Recursively search for .m3u8 file in .movpkg package
+                            if let m3u8URL = findM3U8File(in: localHLSURL) {
+                                videoAssetURL = m3u8URL
+                            } else {
                                 print("No .m3u8 file found in .movpkg package")
                                 displayErrorIcon()
                                 return
                             }
-                            
-                            videoAssetURL = playlistURL
                         } else {
                             videoAssetURL = localHLSURL
                         }
@@ -226,6 +217,29 @@ public final class MediaView: UIView {
                 }
             }
         }
+    
+    // Recursively search for .m3u8 file in directory and subdirectories
+      private func findM3U8File(in directory: URL) -> URL? {
+          let fileManager = FileManager.default
+          guard let enumerator = fileManager.enumerator(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey], options: []) else {
+              print("Unable to create directory enumerator for \(directory)")
+              return nil
+          }
+          
+          for case let fileURL as URL in enumerator {
+              do {
+                  let attributes = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
+                  if attributes.isRegularFile == true && fileURL.pathExtension.lowercased() == "m3u8" {
+                      return fileURL
+                  }
+                  // Skip directories to avoid unnecessary recursion, handled by enumerator
+              } catch {
+                  print("Error reading attributes for \(fileURL): \(error)")
+              }
+          }
+          
+          return nil
+      }
 
         // This new helper function completes the setup on the main thread once the asset is confirmed to be playable.
         private func finishVideoSetup(with asset: AVAsset, for url: URL, isHLS: Bool) {
