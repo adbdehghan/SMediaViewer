@@ -64,7 +64,7 @@ final public class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @
     }
     
     // MARK: - AVAssetResourceLoaderDelegate
-    func resourceLoader(_ resourceLoader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
+    public func resourceLoader(_ resourceLoader: AVAssetResourceLoader, shouldWaitForLoadingOfRequestedResource loadingRequest: AVAssetResourceLoadingRequest) -> Bool {
         guard let requestURL = loadingRequest.request.url, let originalURL = originalURL(from: requestURL) else {
             loadingRequest.finishLoading(with: NSError(domain: NSURLErrorDomain, code: NSURLErrorBadURL, userInfo: nil))
             return false
@@ -89,7 +89,7 @@ final public class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @
         return true
     }
     
-    func resourceLoader(_ resourceLoader: AVAssetResourceLoader, didCancel loadingRequest: AVAssetResourceLoadingRequest) {
+    public func resourceLoader(_ resourceLoader: AVAssetResourceLoader, didCancel loadingRequest: AVAssetResourceLoadingRequest) {
         guard let requestURL = loadingRequest.request.url, let originalURL = originalURL(from: requestURL) else { return }
         accessQueue.async { [weak self] in
             self?.activeOperations[originalURL]?.cancel(loadingRequest: loadingRequest)
