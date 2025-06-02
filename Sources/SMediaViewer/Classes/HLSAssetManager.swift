@@ -11,16 +11,16 @@ import OrderedCollections // From swift-collections package
 final public class HLSAssetManager: NSObject, AVAssetDownloadDelegate, @unchecked Sendable {
    public static let shared = HLSAssetManager()
 
-    private let accessQueue = DispatchQueue(label: "com.yourcompany.hlsassetmanager.accessqueue")
+    private let accessQueue = DispatchQueue(label: "com.yourcompany.hlsassetmanager.accessqueue", qos: .userInitiated)
     private var downloadSession: AVAssetDownloadURLSession!
     private var activeDownloadTasks: [URL: AVAssetDownloadTask] = [:]
-    private var localAssetLocations: [URL: URL] = [:]
+    private var localAssetLocations: [URL: URL] = [:] // Maps original remote URL to local .movpkg URL
     private var preloadingURLs: OrderedSet<URL> = [] // URLs actively being downloaded or queued
 
-    private let maxConcurrentPreloads = 2 // Number of HLS streams to preload concurrently
-    private let hlsCacheDirectoryName = "HLSPreloadCache_v1"
+    private let maxConcurrentPreloads = 2
+    private let hlsCacheDirectoryName = "HLSPreloadCache_v2" // Changed version to ensure fresh cache with new logic
     private var hlsCacheDirectoryURL: URL
-    public var maxHLSCacheSizeInBytes: Int64 = 300 * 1024 * 1024 // 300MB for HLS preloads
+    public var maxHLSCacheSizeInBytes: Int64 = 300 * 1024 * 1024 // 300MB
 
     private lazy var delegateCallbackQueue: OperationQueue = {
         let queue = OperationQueue()
@@ -31,31 +31,36 @@ final public class HLSAssetManager: NSObject, AVAssetDownloadDelegate, @unchecke
 
     private override init() {
         let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        // Using Application Support for more persistent storage if desired, or Caches.
         self.hlsCacheDirectoryURL = appSupportURL.appendingPathComponent(hlsCacheDirectoryName)
         
         super.init()
         
-        try? FileManager.default.createDirectory(at: self.hlsCacheDirectoryURL, withIntermediateDirectories: true, attributes: nil)
+        do {
+            try FileManager.default.createDirectory(at: self.hlsCacheDirectoryURL, withIntermediateDirectories: true, attributes: nil)
+        } catch {
+            print("❌ HLSAssetManager: Failed to create cache directory: \(error)")
+        }
         
-        let config = URLSessionConfiguration.background(withIdentifier: "com.yourcompany.hlsassetmanager.maindownloader")
-        // config.isDiscretionary = false // For preloading, we might want it less discretionary
-        // config.sessionSendsLaunchEvents = true // For true background completion
+        let config = URLSessionConfiguration.background(withIdentifier: "com.yourcompany.hlsassetmanager.maindownloader.v2")
         self.downloadSession = AVAssetDownloadURLSession(configuration: config,
                                                          assetDownloadDelegate: self,
                                                          delegateQueue: delegateCallbackQueue)
         loadPersistedLocationsFromDisk()
         print("📼 HLSAssetManager initialized. Cache path: \(self.hlsCacheDirectoryURL.path)")
-        cleanupHLSDiskCache() // Initial cleanup
+        
+        // Perform initial cleanup on a background thread to avoid blocking init
+        accessQueue.async { [weak self] in
+            self?.cleanupHLSDiskCache()
+        }
     }
     
-    // MARK: - Persistence (Simple UserDefaults example, consider a more robust solution for production)
+    // MARK: - Persistence
     private func persistedLocationsFilePath() -> URL {
-        hlsCacheDirectoryURL.appendingPathComponent("hls_locations.json")
+        hlsCacheDirectoryURL.appendingPathComponent("hls_locations_v2.json")
     }
 
     private func loadPersistedLocationsFromDisk() {
-        accessQueue.sync { // Ensure this is done before manager is used
+        accessQueue.sync {
             let path = persistedLocationsFilePath()
             guard FileManager.default.fileExists(atPath: path.path),
                   let data = try? Data(contentsOf: path),
@@ -63,11 +68,12 @@ final public class HLSAssetManager: NSObject, AVAssetDownloadDelegate, @unchecke
                 localAssetLocations = [:]
                 return
             }
-            // Validate that files still exist
             var validLocations: [URL: URL] = [:]
             for (originalURL, localURL) in decoded {
                 if FileManager.default.fileExists(atPath: localURL.path) {
                     validLocations[originalURL] = localURL
+                } else {
+                    print("🔎 HLS Location: \(localURL.lastPathComponent) for \(originalURL.lastPathComponent) not found on disk. Removing from persisted list.")
                 }
             }
             localAssetLocations = validLocations
@@ -75,12 +81,12 @@ final public class HLSAssetManager: NSObject, AVAssetDownloadDelegate, @unchecke
         }
     }
 
-    private func savePersistedLocationsToDisk() { // Call on accessQueue
+    private func savePersistedLocationsToDisk() { // Must be called on accessQueue
         let path = persistedLocationsFilePath()
         do {
             let data = try JSONEncoder().encode(localAssetLocations)
             try data.write(to: path, options: .atomic)
-            print("💾 HLS locations saved to disk.")
+            // print("💾 HLS locations saved to disk.")
         } catch {
             print("❌ Error saving HLS locations: \(error)")
         }
@@ -91,13 +97,18 @@ final public class HLSAssetManager: NSObject, AVAssetDownloadDelegate, @unchecke
         accessQueue.async { [weak self] in
             guard let self = self else { return }
             
-            // Add new URLs to the end if they are not already downloaded, active, or in queue
+            var addedToQueue = false
             for url in nextPotentialHLSURLs {
                 if url.pathExtension.lowercased() == "m3u8" &&
-                   self.localAssetLocations[url] == nil &&
-                   self.activeDownloadTasks[url] == nil {
-                    self.preloadingURLs.append(url) // OrderedSet handles duplicates
+                   self.localAssetLocations[url] == nil && // Not already downloaded and verified
+                   self.activeDownloadTasks[url] == nil && // Not currently downloading
+                   !self.preloadingURLs.contains(url) {    // Not already in the queue
+                    self.preloadingURLs.append(url)
+                    addedToQueue = true
                 }
+            }
+            if addedToQueue {
+                // print("➕ HLS URLs added to preload queue. Current queue size: \(self.preloadingURLs.count)")
             }
             self.startNextPreloadsIfNeeded()
         }
@@ -109,10 +120,11 @@ final public class HLSAssetManager: NSObject, AVAssetDownloadDelegate, @unchecke
 
     public func cancelPreloading(for url: URL) {
         accessQueue.async { [weak self] in
-            self?.preloadingURLs.remove(url)
-            if let task = self?.activeDownloadTasks.removeValue(forKey: url) {
+            guard let self = self else { return }
+            self.preloadingURLs.remove(url)
+            if let task = self.activeDownloadTasks.removeValue(forKey: url) {
                 task.cancel()
-                print("ℹ️ HLS Preload cancelled for: \(url.lastPathComponent)")
+                print("ℹ️ HLS Preload task explicitly cancelled for: \(url.lastPathComponent)")
             }
         }
     }
@@ -121,55 +133,71 @@ final public class HLSAssetManager: NSObject, AVAssetDownloadDelegate, @unchecke
         accessQueue.async { [weak self] in
             guard let self = self else { return }
             self.preloadingURLs.removeAll()
-            for task in self.activeDownloadTasks.values { task.cancel() }
+            for (_, task) in self.activeDownloadTasks { task.cancel() }
             self.activeDownloadTasks.removeAll()
             print("ℹ️ All HLS preloads cancelled.")
         }
     }
 
     // MARK: - Download Management
-    private func startNextPreloadsIfNeeded() { // Call on accessQueue
-        let currentActiveCount = activeDownloadTasks.count // Simpler count of tasks we've initiated
+    private func startNextPreloadsIfNeeded() { // Must be called on accessQueue
+        let currentActiveCount = activeDownloadTasks.count
         guard currentActiveCount < maxConcurrentPreloads else { return }
 
         let neededToStart = maxConcurrentPreloads - currentActiveCount
         var startedCount = 0
+        
+        // Iterate over a copy of preloadingURLs in case it's modified during iteration (though append is at end)
+        let urlsToConsider = Array(preloadingURLs)
 
-        for urlToPreload in preloadingURLs { // Iterate in order
+        for urlToPreload in urlsToConsider {
             if startedCount >= neededToStart { break }
 
+            // Double check conditions as state might have changed
             if localAssetLocations[urlToPreload] == nil && activeDownloadTasks[urlToPreload] == nil {
                 let asset = AVURLAsset(url: urlToPreload)
+                // Consider adding AVURLAssetPreferPreciseDurationAndTimingKey if issues persist with seeking/duration
+                // let asset = AVURLAsset(url: urlToPreload, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+
+                // Define download options. You can specify bitrates for variants.
+                // For example, to download media with bitrates between 200Kbps and 1Mbps:
+                // let options = [AVAssetDownloadTaskMinimumRequiredMediaBitrateKey: 200000,
+                //                AVAssetDownloadTaskMaximumRequiredMediaBitrateKey: 1000000]
+                // For simplicity, using a minimum bitrate.
+                let options: [String: Any]? = [AVAssetDownloadTaskMinimumRequiredMediaBitrateKey: 1_500_000] // Download at least 1.5Mbps variant
+
                 guard let task = downloadSession.makeAssetDownloadTask(asset: asset,
-                                                                      assetTitle: urlToPreload.lastPathComponent,
-                                                                      assetArtworkData: nil,
-                                                                      options: [AVAssetDownloadTaskMinimumRequiredMediaBitrateKey: 2_000_000]) // Example: Download at least 2Mbps variant
+                                                                      assetTitle: urlToPreload.lastPathComponent.isEmpty ? "UntitledHLS" : urlToPreload.lastPathComponent,
+                                                                      assetArtworkData: nil, // Placeholder for artwork
+                                                                      options: options)
                 else {
-                    print("❌ HLSAssetManager: Unable to create download task for \(urlToPreload.lastPathComponent)"); continue
+                    print("❌ HLSAssetManager: Unable to create download task for \(urlToPreload.lastPathComponent). Removing from queue.")
+                    self.preloadingURLs.remove(urlToPreload) // Remove problematic URL
+                    continue
                 }
                 
                 activeDownloadTasks[urlToPreload] = task
-                task.resume()
+                task.resume() // Start the download
                 startedCount += 1
-                print("▶️ HLS Preload task initiated for: \(urlToPreload.lastPathComponent)")
+                // print("▶️ HLS Preload task initiated for: \(urlToPreload.lastPathComponent)")
             }
         }
-        // Remove started items from the front of the queue
-        for url in activeDownloadTasks.keys { preloadingURLs.remove(url) }
+        // Remove URLs for which tasks have been successfully started from the preloading queue
+        for url in activeDownloadTasks.keys {
+            preloadingURLs.remove(url)
+        }
     }
 
     // MARK: - AVAssetDownloadDelegate
     public func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didFinishDownloadingTo location: URL) {
-        let originalURL = assetDownloadTask.urlAsset.url // This is the original remote HLS URL
+        let originalURL = assetDownloadTask.urlAsset.url
         
         accessQueue.async { [weak self] in
             guard let self = self else { return }
             
-            // --- CORRECTED LINE ---
-            // Convert the URL's absoluteString to Data for hashing
-            let urlStringData = originalURL.absoluteString.data(using: .utf8)! // Force unwrap if you are certain originalURL.absoluteString is always valid UTF-8
-
-            let destinationFilename = (originalURL.lastPathComponent.isEmpty ? UUID().uuidString : originalURL.lastPathComponent) + "_" + urlStringData.sha256().hexEncodedString().prefix(8) + ".m3u8"
+            let urlStringData = originalURL.absoluteString.data(using: .utf8) ?? Data(UUID().uuidString.utf8) // Fallback if string conversion fails
+            let safeOriginalName = originalURL.lastPathComponent.isEmpty ? "downloaded_hls" : originalURL.lastPathComponent.filter { $0.isLetter || $0.isNumber || $0 == "." || $0 == "_" }
+            let destinationFilename = safeOriginalName + "_" + urlStringData.sha256().hexEncodedString().prefix(8) + ".movpkg"
             let persistentLocation = self.hlsCacheDirectoryURL.appendingPathComponent(destinationFilename)
 
             do {
@@ -177,90 +205,176 @@ final public class HLSAssetManager: NSObject, AVAssetDownloadDelegate, @unchecke
                     try FileManager.default.removeItem(at: persistentLocation)
                 }
                 try FileManager.default.moveItem(at: location, to: persistentLocation)
-                
-                self.localAssetLocations[originalURL] = persistentLocation
-                self.savePersistedLocationsToDisk() // Ensure this method is implemented correctly
-                print("✅ HLS Asset downloaded: \(originalURL.lastPathComponent) -> \(persistentLocation.lastPathComponent)")
+                // print("✅ HLS Asset downloaded (pre-verification): \(originalURL.lastPathComponent) -> \(persistentLocation.lastPathComponent)")
+
+                // ** NEW: Verify playability of the downloaded .movpkg **
+                let localAsset = AVURLAsset(url: persistentLocation)
+                let requiredKeys = ["playable"] // "isPlayable" is the property, "playable" is the key for KVO/loading
+
+                localAsset.loadValuesAsynchronously(forKeys: requiredKeys) { [weak self] in
+                    guard let self = self else { return }
+                    
+                    // Ensure subsequent operations are on the accessQueue
+                    self.accessQueue.async {
+                        var assetError: NSError?
+                        let playableStatus = localAsset.statusOfValue(forKey: "playable", error: &assetError)
+
+                        if playableStatus == .loaded && localAsset.isPlayable {
+                            // Asset is playable, proceed with caching
+                            self.localAssetLocations[originalURL] = persistentLocation
+                            self.savePersistedLocationsToDisk()
+                            print("✅ HLS Asset VERIFIED PLAYABLE: \(originalURL.lastPathComponent) at \(persistentLocation.lastPathComponent)")
+                        } else {
+                            // Asset is not playable, delete it and log
+                            print("❌ Downloaded HLS Asset at \(persistentLocation.lastPathComponent) for \(originalURL.lastPathComponent) is NOT PLAYABLE after download. Status: \(playableStatus.rawValue). Error: \(assetError?.localizedDescription ?? "Unknown"). Deleting.")
+                            do {
+                                try FileManager.default.removeItem(at: persistentLocation)
+                            } catch {
+                                print("❌ Error deleting non-playable HLS asset \(persistentLocation.lastPathComponent): \(error)")
+                            }
+                            // Do NOT add to localAssetLocations
+                        }
+                        
+                        // Common task completion regardless of playability outcome
+                        self.activeDownloadTasks.removeValue(forKey: originalURL)
+                        self.startNextPreloadsIfNeeded()
+                        self.cleanupHLSDiskCache() // Clean up cache after potential changes
+                    }
+                }
+                // Note: The task removal and next preload start are now inside the async verification block.
+                // This means they wait until verification is complete.
+
             } catch {
                 print("❌ HLSAssetManager: Error moving downloaded file: \(error) for \(originalURL.lastPathComponent)")
+                // If moving fails, still remove from active tasks and try next.
+                self.activeDownloadTasks.removeValue(forKey: originalURL)
+                self.startNextPreloadsIfNeeded()
             }
-            
-            self.activeDownloadTasks.removeValue(forKey: originalURL)
-            self.startNextPreloadsIfNeeded()
-            self.cleanupHLSDiskCache()
         }
     }
     
     public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let assetDownloadTask = task as? AVAssetDownloadTask else { return }
+        guard let assetDownloadTask = task as? AVAssetDownloadTask else {
+            // print("ℹ️ HLSAssetManager: Non-asset task completed (or cancelled).")
+            return
+        }
         let originalURL = assetDownloadTask.urlAsset.url
 
         accessQueue.async { [weak self] in
             guard let self = self else { return }
+            
+            // If an error occurred (and it wasn't a cancellation), log it.
+            // The didFinishDownloadingTo delegate is NOT called if an error occurs.
             if let nsError = error as NSError?, !(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled) {
-                 print("❌ HLS Download task failed for \(originalURL.lastPathComponent): \(error!.localizedDescription)")
+                 print("❌ HLS Download task FAILED for \(originalURL.lastPathComponent): \(nsError.localizedDescription)")
             } else if error == nil {
-                 // This case should ideally be handled by didFinishDownloadingTo,
-                 // but if no error, it means successful completion.
-                 // If didFinishDownloadingTo was not called, something is amiss.
+                 // This case should ideally be fully handled by didFinishDownloadingTo.
+                 // If this is called with error == nil, it means the task itself completed without system error,
+                 // but didFinishDownloadingTo is where the actual file handling and verification occurs.
+                 // print("ℹ️ HLS Download task reported completion without error for \(originalURL.lastPathComponent), awaiting didFinishDownloadingTo.")
             }
-            self.activeDownloadTasks.removeValue(forKey: originalURL)
-            self.startNextPreloadsIfNeeded()
+            // Else, it was a cancellation, which is fine.
+            
+            // Always remove from active tasks and try to start next,
+            // as this task (whether success, fail, or cancel) is now finished.
+            // If successful, didFinishDownloadingTo will handle the actual asset.
+            // If failed here, it won't be added to cache.
+            if self.activeDownloadTasks[originalURL] != nil {
+                 self.activeDownloadTasks.removeValue(forKey: originalURL)
+                 self.startNextPreloadsIfNeeded()
+            }
         }
     }
     
     public func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didLoad timeRange: CMTimeRange, totalTimeRangesLoaded: [NSValue], timeRangeExpectedToLoad: CMTimeRange) {
+        // This delegate method can be used to update UI with download progress.
+        // For simplicity in this manager, we'll just print it.
         let percentComplete = totalTimeRangesLoaded.reduce(0.0) { $0 + $1.timeRangeValue.duration.seconds } / timeRangeExpectedToLoad.duration.seconds * 100
         let originalURL = assetDownloadTask.urlAsset.url
         if !percentComplete.isNaN && percentComplete.isFinite {
-             print(String(format: "⏳ HLS Download Progress for %@: %.2f%%", originalURL.lastPathComponent, percentComplete))
+             // print(String(format: "⏳ HLS Download Progress for %@: %.2f%%", originalURL.lastPathComponent, percentComplete))
         }
     }
 
     // MARK: - HLS Disk Cache Cleanup (LRU)
-    private func cleanupHLSDiskCache() { // Call on accessQueue
+    private func cleanupHLSDiskCache() { // Must be called on accessQueue
         var filesWithAttributes: [(url: URL, date: Date, size: Int64)] = []
-        guard let enumerator = FileManager.default.enumerator(at: hlsCacheDirectoryURL, includingPropertiesForKeys: [.contentModificationDateKey, .totalFileSizeKey, .isDirectoryKey], options: .skipsHiddenFiles) else { return }
-
-        var currentSize: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            guard let resources = try? fileURL.resourceValues(forKeys: [.isDirectoryKey, .totalFileSizeKey, .contentModificationDateKey]),
-                  !(resources.isDirectory ?? true), let fileSize = resources.totalFileSize, let modDate = resources.contentModificationDate else { continue }
-            filesWithAttributes.append((url: fileURL, date: modDate, size: Int64(fileSize)))
-            currentSize += Int64(fileSize)
+        
+        guard FileManager.default.fileExists(atPath: hlsCacheDirectoryURL.path) else {
+            // print("ℹ️ HLS Cache directory does not exist. Skipping cleanup.")
+            return
         }
 
-        if currentSize < maxHLSCacheSizeInBytes { return }
-        print("🧹 HLS Cache (\(ByteCountFormatter.string(fromByteCount: currentSize, countStyle: .file))) exceeds limit. Cleaning...")
-        filesWithAttributes.sort { $0.date < $1.date } // LRU
-
-        for fileInfo in filesWithAttributes where currentSize > maxHLSCacheSizeInBytes {
-            do {
-                try FileManager.default.removeItem(at: fileInfo.url)
-                currentSize -= fileInfo.size
-                if let keyToRemove = localAssetLocations.first(where: { $0.value.standardizedFileURL == fileInfo.url.standardizedFileURL })?.key {
-                    localAssetLocations.removeValue(forKey: keyToRemove)
+        do {
+            let directoryContents = try FileManager.default.contentsOfDirectory(at: hlsCacheDirectoryURL,
+                                                                                includingPropertiesForKeys: [.contentModificationDateKey, .totalFileSizeKey, .isDirectoryKey],
+                                                                                options: .skipsHiddenFiles)
+            var currentSize: Int64 = 0
+            for fileURL in directoryContents {
+                let resources = try fileURL.resourceValues(forKeys: [.isDirectoryKey, .totalFileSizeKey, .contentModificationDateKey])
+                if !(resources.isDirectory ?? true), let fileSize = resources.totalFileSize, let modDate = resources.contentModificationDate {
+                    filesWithAttributes.append((url: fileURL, date: modDate, size: Int64(fileSize)))
+                    currentSize += Int64(fileSize)
                 }
-                print("🗑️ Evicted HLS: \(fileInfo.url.lastPathComponent)")
-            } catch { print("❌ Error evicting HLS asset \(fileInfo.url.lastPathComponent): \(error)") }
+            }
+
+            if currentSize < maxHLSCacheSizeInBytes {
+                // print("ℹ️ HLS Cache size (\(ByteCountFormatter.string(fromByteCount: currentSize, countStyle: .file))) is within limit. No cleanup needed.")
+                return
+            }
+            
+            print("🧹 HLS Cache (\(ByteCountFormatter.string(fromByteCount: currentSize, countStyle: .file))) exceeds limit (\(ByteCountFormatter.string(fromByteCount: maxHLSCacheSizeInBytes, countStyle: .file))). Cleaning...")
+            filesWithAttributes.sort { $0.date < $1.date } // LRU: oldest first
+
+            for fileInfo in filesWithAttributes where currentSize > maxHLSCacheSizeInBytes {
+                do {
+                    try FileManager.default.removeItem(at: fileInfo.url)
+                    currentSize -= fileInfo.size
+                    // Also remove from our in-memory map if this file was a cached asset's location
+                    if let keyToRemove = localAssetLocations.first(where: { $0.value.standardizedFileURL == fileInfo.url.standardizedFileURL })?.key {
+                        localAssetLocations.removeValue(forKey: keyToRemove)
+                        // print("🗑️ Evicted HLS: \(fileInfo.url.lastPathComponent) (and removed from map for \(keyToRemove.lastPathComponent))")
+                    } else {
+                        // print("🗑️ Evicted HLS file (not in map): \(fileInfo.url.lastPathComponent)")
+                    }
+                } catch {
+                    print("❌ Error evicting HLS asset \(fileInfo.url.lastPathComponent): \(error)")
+                }
+            }
+            if localAssetLocations.values.count != filesWithAttributes.filter({ currentSize <= maxHLSCacheSizeInBytes && $0.size > 0}).count {
+                 savePersistedLocationsToDisk() // Update persisted list if changes were made to mapped items
+            }
+            // print("🧹 HLS Cache cleanup complete. Final size: \(ByteCountFormatter.string(fromByteCount: currentSize, countStyle: .file))")
+
+        } catch {
+            print("❌ Error enumerating HLS cache directory for cleanup: \(error)")
         }
-        savePersistedLocationsToDisk() // Update persisted list after cleanup
     }
     
     public func clearHLSCache(completion: (() -> Void)? = nil) {
         accessQueue.async { [weak self] in
             guard let self = self else { DispatchQueue.main.async { completion?() }; return }
-            self.cancelAllPreloading() // Cancel ongoing
-            self.localAssetLocations.removeAll()
-            if FileManager.default.fileExists(atPath: self.hlsCacheDirectoryURL.path) {
-                do {
-                    try FileManager.default.removeItem(at: self.hlsCacheDirectoryURL)
-                    try FileManager.default.createDirectory(at: self.hlsCacheDirectoryURL, withIntermediateDirectories: true, attributes: nil)
-                    print("🧹 HLS Preload Cache cleared.")
-                } catch { print("❌ Error clearing HLS cache directory: \(error)") }
+            
+            self.cancelAllPreloading() // Cancel any ongoing downloads
+            
+            // Wait for cancellations to process before deleting files
+            self.accessQueue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self = self else { DispatchQueue.main.async { completion?() }; return }
+                
+                self.localAssetLocations.removeAll()
+                if FileManager.default.fileExists(atPath: self.hlsCacheDirectoryURL.path) {
+                    do {
+                        try FileManager.default.removeItem(at: self.hlsCacheDirectoryURL)
+                        try FileManager.default.createDirectory(at: self.hlsCacheDirectoryURL, withIntermediateDirectories: true, attributes: nil)
+                        print("🧹 HLS Preload Cache cleared successfully.")
+                    } catch {
+                        print("❌ Error clearing HLS cache directory: \(error)")
+                    }
+                }
+                self.savePersistedLocationsToDisk() // Save the empty locations
+                DispatchQueue.main.async { completion?() }
             }
-            self.savePersistedLocationsToDisk()
-            DispatchQueue.main.async { completion?() }
         }
     }
 }
+
