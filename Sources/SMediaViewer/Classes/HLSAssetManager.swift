@@ -9,7 +9,7 @@ import AVFoundation
 import OrderedCollections // From swift-collections package
 
 final public class HLSAssetManager: NSObject, AVAssetDownloadDelegate, @unchecked Sendable {
-    static let shared = HLSAssetManager()
+   public static let shared = HLSAssetManager()
 
     private let accessQueue = DispatchQueue(label: "com.yourcompany.hlsassetmanager.accessqueue")
     private var downloadSession: AVAssetDownloadURLSession!
