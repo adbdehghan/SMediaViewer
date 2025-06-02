@@ -5,8 +5,15 @@
 //  Created by Adib.
 //
 
+//
+//  VideoCacheManager.swift
+//  SMediaViewer
+//
+//  Created by Adib.
+//
+
 import AVFoundation
-import MobileCoreServices // For UTType constants if still needed, or UniformTypeIdentifiers
+import UniformTypeIdentifiers // For UTType constants
 
 final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendable {
     static let shared = VideoCacheManager()
@@ -15,7 +22,7 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
     private let cacheDirectory: URL
     private let metadataDirectory: URL
     private var activeOperations: [URL: VideoDataOperation] = [:]
-    private let accessQueue = DispatchQueue(label: "com.yourcompany.videocachemanager.accessqueue")    
+    private let accessQueue = DispatchQueue(label: "com.yourcompany.videocachemanager.accessqueue")
     public var maxCacheSizeInBytes: Int64 = 500 * 1024 * 1024 // 500 MB
     private let preferredCacheFolderName = "AdvancedVideoCache_MP4_v1"
     
@@ -31,7 +38,7 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
         super.init()
         
         DispatchQueue.global(qos: .background).async { [weak self] in
-            self?.accessQueue.async {[weak self] in// Ensure cleanup logic itself is on accessQueue
+            self?.accessQueue.async {[weak self] in
                 self?.cleanupCache()
             }
         }
@@ -41,6 +48,10 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
     func assetURL(for originalURL: URL) -> URL? {
         guard let scheme = originalURL.scheme, ["http", "https"].contains(scheme.lowercased()) else {
             print("⚠️ Original URL scheme is not http/https, cannot apply custom caching scheme: \(originalURL)")
+            return originalURL // Return original if not HTTP/HTTPS
+        }
+        // Ensure no double-scheming if already a custom scheme URL
+        if originalURL.scheme == customScheme {
             return originalURL
         }
         return URL(string: "\(customScheme):\(originalURL.absoluteString)")
@@ -84,63 +95,98 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
             self?.activeOperations[originalURL]?.cancel(loadingRequest: loadingRequest)
         }
     }
+
+    // MARK: - MP4 Preloading
+    public func initiatePreload(for originalURL: URL, preloadByteCount: Int64) {
+        accessQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            // 1. Check metadata: If fully downloaded, or if enough bytes are already downloaded, no need to preload.
+            if let metadata = self.loadMetadata(for: originalURL) {
+                if metadata.isFullyDownloaded {
+                    // print("ℹ️ MP4 Preload: \(originalURL.lastPathComponent) already fully downloaded.")
+                    return
+                }
+                // Check if the requested preloadByteCount is already covered
+                var downloadedLengthForPreload: Int64 = 0
+                for range in metadata.downloadedRanges {
+                    if range.location == 0 { // We are interested in initial chunk for preload
+                        downloadedLengthForPreload = max(downloadedLengthForPreload, Int64(NSMaxRange(range)))
+                    }
+                }
+                if downloadedLengthForPreload >= preloadByteCount {
+                    // print("ℹ️ MP4 Preload: \(originalURL.lastPathComponent) already has \(downloadedLengthForPreload) bytes, satisfying preload request for \(preloadByteCount).")
+                    return
+                }
+            }
+
+            // 2. Get or create VideoDataOperation
+            let operation: VideoDataOperation
+            if let existingOperation = self.activeOperations[originalURL] {
+                operation = existingOperation
+                // print("ℹ️ MP4 Preload: Using existing operation for \(originalURL.lastPathComponent).")
+            } else {
+                operation = VideoDataOperation(originalURL: originalURL, cacheManager: self)
+                self.activeOperations[originalURL] = operation
+                // print("ℹ️ MP4 Preload: Created new operation for \(originalURL.lastPathComponent).")
+            }
+
+            // 3. Instruct the operation to start preloading
+            // print("ℹ️ MP4 Preload: Instructing operation to preload \(preloadByteCount) bytes for \(originalURL.lastPathComponent).")
+            operation.startPreload(requestedByteCount: preloadByteCount)
+        }
+    }
     
     // MARK: - Internal Cache Logic (called by VideoDataOperation)
     func operation(_ operation: VideoDataOperation, didReceiveResponse response: URLResponse) {
         accessQueue.async { [weak self] in
-            guard let self = self, let httpResponse = response as? HTTPURLResponse, let url = response.url else { return }
+            guard let self = self, let httpResponse = response as? HTTPURLResponse, let opOriginalURL = operation.originalURLFromOperation else { return } // Use URL from operation
             
             var totalLength: Int64 = 0
-            if let contentRange = httpResponse.allHeaderFields["Content-Range"] as? String { // e.g., "bytes 200-1000/67589"
+            if let contentRange = httpResponse.allHeaderFields["Content-Range"] as? String {
                 if let totalStr = contentRange.components(separatedBy: "/").last, let total = Int64(totalStr) {
                     totalLength = total
                 }
             }
-            if totalLength == 0 {
+            if totalLength == 0 { // Fallback if Content-Range is not present or not formatted as expected
                 totalLength = httpResponse.expectedContentLength > 0 ? httpResponse.expectedContentLength : (response.expectedContentLength > 0 ? response.expectedContentLength : 0)
             }
             
             let mimeType = response.mimeType ?? "application/octet-stream"
             
-            var metadata = self.loadMetadata(for: url) // Use the operation's original URL if response.url is different
+            var metadata = self.loadMetadata(for: opOriginalURL)
             if metadata == nil {
-                let fileName = self.cacheFileName(for: operation.originalURL) // Use operation's original URL for filename consistency
-                metadata = VideoCacheItemMetadata(originalURL: operation.originalURL, totalLength: totalLength, mimeType: mimeType, downloadedRanges: [], lastAccessDate: Date(), localFileName: fileName)
+                let fileName = self.cacheFileName(for: opOriginalURL)
+                metadata = VideoCacheItemMetadata(originalURL: opOriginalURL, totalLength: totalLength, mimeType: mimeType, downloadedRanges: [], lastAccessDate: Date(), localFileName: fileName)
             } else {
                 if metadata!.totalLength == 0 && totalLength > 0 { metadata!.totalLength = totalLength }
+                 // Only update mimeType if it was generic and now we have a specific one
+                if metadata!.mimeType == "application/octet-stream" && mimeType != "application/octet-stream" {
+                    metadata!.mimeType = mimeType
+                }
                 metadata!.lastAccessDate = Date()
             }
             self.saveMetadata(metadata!)
             
             let acceptRanges = httpResponse.allHeaderFields["Accept-Ranges"] as? String
-            operation.updateContentInformation(totalLength: totalLength, mimeType: mimeType, isByteRangeAccessSupported: acceptRanges == "bytes")
+            operation.updateContentInformation(totalLength: totalLength, mimeType: mimeType, isByteRangeAccessSupported: acceptRanges?.lowercased() == "bytes")
         }
     }
     
     func operation(_ operation: VideoDataOperation, didReceiveData data: Data, atOffset offset: Int64) {
         accessQueue.async { [weak self] in
-            guard let self = self, var metadata = self.loadMetadata(for: operation.originalURL) else { return }
+            guard let self = self, let opOriginalURL = operation.originalURLFromOperation, var metadata = self.loadMetadata(for: opOriginalURL) else { return }
             
             let filePath = self.cacheDirectory.appendingPathComponent(metadata.localFileName)
             do {
                 let fileHandle: FileHandle
                 if !FileManager.default.fileExists(atPath: filePath.path) {
-                    if metadata.totalLength > 0 { // Pre-allocate file size if known, can help with fragmentation
-                        // FileManager.default.createFile(atPath: filePath.path, contents: nil, attributes: nil)
-                        // let emptyData = Data(count: Int(metadata.totalLength))
-                        // try emptyData.write(to: filePath)
-                        // Simpler: just create empty and let it grow
-                        FileManager.default.createFile(atPath: filePath.path, contents: nil, attributes: nil)
-                    } else {
-                        FileManager.default.createFile(atPath: filePath.path, contents: nil, attributes: nil)
-                    }
+                    FileManager.default.createFile(atPath: filePath.path, contents: nil, attributes: nil)
                 }
                 fileHandle = try FileHandle(forWritingTo: filePath)
                 
                 fileHandle.seek(toFileOffset: UInt64(offset))
                 fileHandle.write(data)
-                // Consider if synchronize is needed for every write; it can be slow.
-                // try fileHandle.synchronize()
                 fileHandle.closeFile()
                 
                 let receivedRange = NSRange(location: Int(offset), length: data.count)
@@ -148,33 +194,37 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
                 metadata.lastAccessDate = Date()
                 self.saveMetadata(metadata)
                 
-                operation.processPendingRequests()
+                operation.processPendingRequests() // Process any player requests waiting for this data
                 
             } catch {
                 print("❌ Error writing to cache file \(filePath.lastPathComponent): \(error)")
-                operation.failPendingRequests(with: error)
+                operation.failPendingRequests(with: error) // Fail player requests
             }
         }
     }
     
     func operationDidComplete(_ operation: VideoDataOperation, error: Error?) {
         accessQueue.async { [weak self] in
-            guard let self = self else { return }
+            guard let self = self, let opOriginalURL = operation.originalURLFromOperation else { return }
             if error == nil {
-                if var metadata = self.loadMetadata(for: operation.originalURL) {
+                if var metadata = self.loadMetadata(for: opOriginalURL) {
                     metadata.lastAccessDate = Date()
                     self.saveMetadata(metadata)
-                    print("✅ Operation for \(operation.originalURL.lastPathComponent) completed successfully. Fully downloaded: \(metadata.isFullyDownloaded)")
+                    // print("✅ Operation for \(opOriginalURL.lastPathComponent) completed successfully. Fully downloaded: \(metadata.isFullyDownloaded)")
                 }
             } else {
-                print("🔴 Operation for \(operation.originalURL.lastPathComponent) completed with error: \(error!.localizedDescription)")
+                // print("🔴 Operation for \(opOriginalURL.lastPathComponent) completed with error: \(error!.localizedDescription)")
             }
-            // Trigger cache cleanup less aggressively, perhaps periodically or on app lifecycle events.
-            // For now, let's do it if no error, as a file might have grown.
-            if error == nil {
+            
+            // Only remove operation if it's not handling any more player requests and preload is done or failed
+            if operation.isNoLongerNeeded() {
+                 self.activeOperations.removeValue(forKey: opOriginalURL)
+                 // print("🗑️ Removed operation for \(opOriginalURL.lastPathComponent). Active ops: \(self.activeOperations.count)")
+            }
+
+            if error == nil { // If successful, might have increased cache size
                 self.cleanupCache()
             }
-            self.activeOperations[operation.originalURL] = nil
         }
     }
     
@@ -182,8 +232,8 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
     internal func cacheFileName(for url: URL) -> String {
         let unsafeChars = CharacterSet(charactersIn: "/\\?%*|\"<>:")
         let safePathComponent = url.lastPathComponent.components(separatedBy: unsafeChars).joined(separator: "_")
-        let hash = url.absoluteString.data(using: .utf8)!.sha256().hexEncodedString().prefix(16) // Short hash
-        return "\(hash)_\(safePathComponent).mp4"
+        let hash = url.absoluteString.data(using: .utf8)!.sha256().hexEncodedString().prefix(16)
+        return "\(hash)_\(safePathComponent).mp4" // Assuming mp4, though could be other types
     }
     
     private func metadataFilePath(for originalURL: URL) -> URL {
@@ -191,7 +241,7 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
         return metadataDirectory.appendingPathComponent(fileName)
     }
     
-    internal func loadMetadata(for originalURL: URL) -> VideoCacheItemMetadata? { // Call on accessQueue
+    internal func loadMetadata(for originalURL: URL) -> VideoCacheItemMetadata? {
         let filePath = metadataFilePath(for: originalURL)
         guard FileManager.default.fileExists(atPath: filePath.path),
               let data = try? Data(contentsOf: filePath),
@@ -201,7 +251,7 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
         return metadata
     }
     
-    internal func saveMetadata(_ metadata: VideoCacheItemMetadata) { // Call on accessQueue
+    internal func saveMetadata(_ metadata: VideoCacheItemMetadata) {
         let filePath = metadataFilePath(for: metadata.originalURL)
         do {
             let data = try JSONEncoder().encode(metadata)
@@ -215,9 +265,9 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
         return cacheDirectory.appendingPathComponent(metadata.localFileName)
     }
     
-    private func mergeRanges(_ ranges: [NSRange], withNewRange newRange: NSRange) -> [NSRange] { // Call on accessQueue
+    private func mergeRanges(_ ranges: [NSRange], withNewRange newRange: NSRange) -> [NSRange] {
         var allRanges = ranges + [newRange]
-        allRanges.removeAll { $0.length == 0 } // Remove zero-length ranges
+        allRanges.removeAll { $0.length == 0 }
         allRanges.sort { $0.location < $1.location }
         
         var merged: [NSRange] = []
@@ -236,38 +286,48 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
         return merged
     }
     
-    internal func tryFulfillFromCache(loadingRequest: AVAssetResourceLoadingRequest, for originalURL: URL) -> Bool { // Call on accessQueue
+    internal func tryFulfillFromCache(loadingRequest: AVAssetResourceLoadingRequest, for originalURL: URL) -> Bool {
         guard let metadata = loadMetadata(for: originalURL), metadata.totalLength > 0 else { return false }
         
         if let infoRequest = loadingRequest.contentInformationRequest {
-            if infoRequest.contentType == nil {
-                if let type = UTType(mimeType: metadata.mimeType) { // Need UniformTypeIdentifiers import
-                    infoRequest.contentType = type.identifier
+            if infoRequest.contentType == nil { // Only set if not already set
+                if let typeIdentifier = UTType(mimeType: metadata.mimeType)?.identifier {
+                    infoRequest.contentType = typeIdentifier
                 } else {
-                    infoRequest.contentType = nil
+                    infoRequest.contentType = UTType.data.identifier // Fallback
                 }
-                infoRequest.contentLength = metadata.totalLength
-                infoRequest.isByteRangeAccessSupported = true
             }
+            if infoRequest.contentLength == 0 { infoRequest.contentLength = metadata.totalLength }
+            infoRequest.isByteRangeAccessSupported = true // Assume true if we are caching ranges
         }
         
         guard let dataRequest = loadingRequest.dataRequest else {
-            return false
+             // This might be just an info request, which is fine.
+             // If infoRequest was populated, we can consider it "fulfilled" in terms of info.
+             if loadingRequest.contentInformationRequest != nil && !loadingRequest.isFinished {
+                 // It's possible the player only wanted contentInformation at this stage.
+                 // If all info is provided, we might not need to finishLoading() yet,
+                 // as it might expect data requests later.
+             }
+            return false // No data request to fulfill from cache.
         }
         
         let requestedOffset = dataRequest.requestedOffset
         let requestedLength = dataRequest.requestedLength
-        var currentOffsetInRequest = dataRequest.currentOffset
+        var currentOffsetInRequest = dataRequest.currentOffset // This is where the player expects data to start from for *this* respond call
         let requestedEnd = requestedOffset + Int64(requestedLength)
-        var fulfilledFromCache = false
+        var fulfilledAllRequestedData = false
         
         do {
             let fileHandle = try FileHandle(forReadingFrom: dataFilePath(for: metadata))
             defer { fileHandle.closeFile() }
             
-            for cachedRange in mergeRanges(metadata.downloadedRanges, withNewRange: NSRange()) {
+            // Iterate through cached ranges to find data for the current request
+            for cachedRange in mergeRanges(metadata.downloadedRanges, withNewRange: NSRange()) { // Ensure ranges are merged
                 let rangeStartInCache = Int64(cachedRange.location)
                 let rangeEndInCache = Int64(cachedRange.location + cachedRange.length)
+
+                // Calculate the intersection of the current dataRequest's *remaining* need and this cachedRange
                 let effectiveReadOffset = max(currentOffsetInRequest, rangeStartInCache)
                 let effectiveReadEnd = min(requestedEnd, rangeEndInCache)
                 
@@ -277,34 +337,39 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
                         fileHandle.seek(toFileOffset: UInt64(effectiveReadOffset))
                         let data = fileHandle.readData(ofLength: lengthToProvide)
                         dataRequest.respond(with: data)
-                        currentOffsetInRequest += Int64(data.count)
-                        if currentOffsetInRequest >= requestedEnd { break }
+                        currentOffsetInRequest += Int64(data.count) // Advance based on data provided
+                        if currentOffsetInRequest >= requestedEnd {
+                            fulfilledAllRequestedData = true
+                            break // Current dataRequest is fully satisfied
+                        }
                     }
                 }
             }
             
-            if currentOffsetInRequest >= requestedEnd {
+            if fulfilledAllRequestedData {
                 if !loadingRequest.isFinished { loadingRequest.finishLoading() }
-                fulfilledFromCache = true
-            } else if dataRequest.requestsAllDataToEndOfResource && metadata.isFullyDownloaded && currentOffsetInRequest >= metadata.totalLength {
-                if !loadingRequest.isFinished { loadingRequest.finishLoading() }
-                fulfilledFromCache = true
-            }
-            
-            if fulfilledFromCache {
-                self.accessQueue.async { [weak self] in // Dispatch to avoid blocking the delegate return
+                // Update last access date on the main accessQueue
+                self.accessQueue.async { [weak self] in
                     if var updatedMetadata = self?.loadMetadata(for: originalURL) {
                         updatedMetadata.lastAccessDate = Date()
                         self?.saveMetadata(updatedMetadata)
                     }
                 }
+                return true // This specific loadingRequest is fully handled from cache.
             }
+            
+            // If it's a request for all data to end and we have it fully downloaded
+            if dataRequest.requestsAllDataToEndOfResource && metadata.isFullyDownloaded && currentOffsetInRequest >= metadata.totalLength {
+                 if !loadingRequest.isFinished { loadingRequest.finishLoading() }
+                 return true
+            }
+
         } catch {
             print("❌ Error reading from cache for \(originalURL.lastPathComponent): \(error)")
             if !loadingRequest.isFinished { loadingRequest.finishLoading(with: error) }
-            return true
+            return true // Error occurred, consider it "handled" by failing.
         }
-        return fulfilledFromCache
+        return false // Not fully fulfilled from cache, network operation will continue/start.
     }
     
     // MARK: - Cache Cleanup
@@ -331,13 +396,12 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
         }
         
         if currentCacheSize < maxCacheSizeInBytes {
-            print("ℹ️ Cache size is \(ByteCountFormatter.string(fromByteCount: currentCacheSize, countStyle: .file)). No cleanup needed.")
+            // print("ℹ️ Cache size is \(ByteCountFormatter.string(fromByteCount: currentCacheSize, countStyle: .file)). No cleanup needed.")
             return
         }
         
         print("🧹 Cache size (\(ByteCountFormatter.string(fromByteCount: currentCacheSize, countStyle: .file))) exceeds limit. Cleaning up...")
         
-        // Sort by last access date (oldest first) for LRU eviction.
         allMetadataItems.sort { $0.lastAccessDate < $1.lastAccessDate }
         
         for meta in allMetadataItems {
@@ -352,8 +416,10 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
                         try FileManager.default.removeItem(at: metadataFileURL)
                         currentCacheSize -= fileSize
                         print("🗑️ Evicted \(meta.localFileName) (\(ByteCountFormatter.string(fromByteCount: fileSize, countStyle: .file))) from cache.")
-                    } else { // If data file doesn't exist, just clean up metadata
-                        try FileManager.default.removeItem(at: metadataFileURL)
+                    } else {
+                        if FileManager.default.fileExists(atPath: metadataFileURL.path) {
+                             try FileManager.default.removeItem(at: metadataFileURL)
+                        }
                     }
                 } catch {
                     print("❌ Error removing \(meta.localFileName) from cache: \(error)")
@@ -368,27 +434,34 @@ final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @uncheck
     public func clearAllCache(completion: (() -> Void)? = nil) {
         accessQueue.async { [weak self] in
             guard let self = self else { DispatchQueue.main.async { completion?() }; return }
-            do {
-                // First, invalidate all active operations
-                self.activeOperations.values.forEach { $0.invalidateAndCancelSession() }
-                self.activeOperations.removeAll() // Clear the dictionary
-                
-                // Wait a moment for sessions to be invalidated if needed, or use completion handlers.
-                // For simplicity, directly remove directories.
-                if FileManager.default.fileExists(atPath: self.cacheDirectory.path) {
-                    try FileManager.default.removeItem(at: self.cacheDirectory)
+            
+            // Cancel and remove all active operations first
+            let urlsToInvalidate = Array(self.activeOperations.keys)
+            for url in urlsToInvalidate {
+                if let operation = self.activeOperations.removeValue(forKey: url) {
+                    operation.invalidateAndCancelSession()
                 }
-                if FileManager.default.fileExists(atPath: self.metadataDirectory.path) {
-                    try FileManager.default.removeItem(at: self.metadataDirectory)
-                }
-                
-                try FileManager.default.createDirectory(at: self.cacheDirectory, withIntermediateDirectories: true, attributes: nil)
-                try FileManager.default.createDirectory(at: self.metadataDirectory, withIntermediateDirectories: true, attributes: nil)
-                print("📼 Advanced Video Cache cleared.")
-            } catch {
-                print("❌ Error clearing advanced video cache: \(error)")
             }
-            DispatchQueue.main.async { completion?() }
+            // Give a brief moment for sessions to fully invalidate before deleting files.
+            // This is a simple approach; more robust would be to use completion handlers from invalidateAndCancelSession.
+            self.accessQueue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self = self else { DispatchQueue.main.async{ completion?() }; return }
+                do {
+                    if FileManager.default.fileExists(atPath: self.cacheDirectory.path) {
+                        try FileManager.default.removeItem(at: self.cacheDirectory)
+                    }
+                    if FileManager.default.fileExists(atPath: self.metadataDirectory.path) {
+                        try FileManager.default.removeItem(at: self.metadataDirectory)
+                    }
+                    
+                    try FileManager.default.createDirectory(at: self.cacheDirectory, withIntermediateDirectories: true, attributes: nil)
+                    try FileManager.default.createDirectory(at: self.metadataDirectory, withIntermediateDirectories: true, attributes: nil)
+                    print("📼 Advanced Video Cache cleared.")
+                } catch {
+                    print("❌ Error clearing advanced video cache: \(error)")
+                }
+                DispatchQueue.main.async { completion?() }
+            }
         }
     }
 }
