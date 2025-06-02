@@ -80,7 +80,6 @@ public final class MediaView: UIView {
     
     
     public func reset() {
-        removeObservers()
         switch currentState {
         case .video(_, let player, let item, _, _):
             player.pause()
@@ -91,21 +90,6 @@ public final class MediaView: UIView {
         playerLayer?.removeFromSuperlayer(); playerLayer = nil
         imageView.image = nil; imageView.isHidden = true
         currentState = .idle
-    }
-    
-    private func removeObservers() {
-        if let token = timeObserverToken {
-            if case .video(_, let player, _, _, _) = currentState {
-                player.removeTimeObserver(token)
-            }
-            timeObserverToken = nil
-        }
-        
-        if case .video(_, _, let playerItem, _, _) = currentState {
-            // Safely remove observer
-            // print("Trying to remove KVO for playerItem of \(currentURL?.lastPathComponent ?? "N/A")")
-            playerItem.removeObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), context: KVO.playerItemStatusContext)
-        }
     }
     
     // MARK: - State Setup
