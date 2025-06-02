@@ -148,12 +148,33 @@ public final class MediaView: UIView {
             var usingResourceLoader = false
 
             if isHLSStream {
-                if let localHLSURL = HLSAssetManager.shared.getLocalAssetURL(for: url) {
-                    videoAssetURL = localHLSURL
-                } else {
-                    videoAssetURL = url
-                }
-                usingResourceLoader = false
+                    if let localHLSURL = HLSAssetManager.shared.getLocalAssetURL(for: url) {
+                        // Check if the URL points to a .movpkg package
+                        if localHLSURL.pathExtension.lowercased() == "movpkg" {
+                            // Locate the .m3u8 file inside the .movpkg package
+                            let fileManager = FileManager.default
+                            guard let movpkgContents = try? fileManager.contentsOfDirectory(at: localHLSURL, includingPropertiesForKeys: nil, options: []) else {
+                                print("Unable to access .movpkg contents")
+                                displayErrorIcon()
+                                return
+                            }
+                            
+                            // Find the .m3u8 file
+                            let m3u8URL = movpkgContents.first { $0.pathExtension.lowercased() == "m3u8" }
+                            guard let playlistURL = m3u8URL else {
+                                print("No .m3u8 file found in .movpkg package")
+                                displayErrorIcon()
+                                return
+                            }
+                            
+                            videoAssetURL = playlistURL
+                        } else {
+                            videoAssetURL = localHLSURL
+                        }
+                    } else {
+                        videoAssetURL = url
+                    }
+                    usingResourceLoader = false
             } else {
                 guard let customSchemeURL = VideoCacheManager.shared.assetURL(for: url) else {
                     displayErrorIcon(); return
