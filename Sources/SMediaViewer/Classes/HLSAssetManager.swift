@@ -169,7 +169,7 @@ final public class HLSAssetManager: NSObject, AVAssetDownloadDelegate, @unchecke
             // Convert the URL's absoluteString to Data for hashing
             let urlStringData = originalURL.absoluteString.data(using: .utf8)! // Force unwrap if you are certain originalURL.absoluteString is always valid UTF-8
 
-            let destinationFilename = (originalURL.lastPathComponent.isEmpty ? UUID().uuidString : originalURL.lastPathComponent) + "_" + urlStringData.sha256().hexEncodedString().prefix(8) + ".movpkg"
+            let destinationFilename = (originalURL.lastPathComponent.isEmpty ? UUID().uuidString : originalURL.lastPathComponent) + "_" + urlStringData.sha256().hexEncodedString().prefix(8) + ".m3u8"
             let persistentLocation = self.hlsCacheDirectoryURL.appendingPathComponent(destinationFilename)
 
             do {
