@@ -57,7 +57,7 @@ final public class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @
         return URL(string: "\(customScheme):\(originalURL.absoluteString)")
     }
     
-    private func originalURL(from customSchemeURL: URL) -> URL? {
+    public func originalURL(from customSchemeURL: URL) -> URL? {
         guard customSchemeURL.scheme == customScheme else { return nil }
         let originalURLString = customSchemeURL.absoluteString.replacingOccurrences(of: "\(customScheme):", with: "", options: .anchored)
         return URL(string: originalURLString)
