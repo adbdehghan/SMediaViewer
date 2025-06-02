@@ -18,7 +18,8 @@ let package = Package(
     ],
     dependencies: [
         // Add SDWebImage dependency
-        .package(url: "https://github.com/SDWebImage/SDWebImage.git", from: "5.19.0") // Use the latest appropriate version
+        .package(url: "https://github.com/SDWebImage/SDWebImage.git", from: "5.19.0"), // Use the latest appropriate version
+        .package(url: "https://github.com/apple/swift-collections.git", from: "1.1.0")
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -27,7 +28,8 @@ let package = Package(
             name: "SMediaViewer",
             dependencies: [
                 // Depend on the SDWebImage product
-                .product(name: "SDWebImage", package: "SDWebImage")
+                .product(name: "SDWebImage", package: "SDWebImage"),
+                .product(name: "OrderedCollections", package: "swift-collections")
             ]),
     ]
 )

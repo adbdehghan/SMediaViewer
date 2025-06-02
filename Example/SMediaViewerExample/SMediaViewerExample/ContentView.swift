@@ -11,7 +11,7 @@ import SMediaViewer
 struct ContentView: View {
     // A list of sample URLs (a mix of videos and images)
     let mediaURLs: [URL] = [
-        URL(string: "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4")!,
+        URL(string: "http://amssamples.streaming.mediaservices.windows.net/69fbaeba-8e92-4740-aedc-ce09ae945073/AzurePromo.ism/manifest(format=m3u8-aapl)")!,
         URL(string: "https://static.euronews.com/articles/stories/08/36/19/56/1366x768_cmsv2_e0200b40-a0ec-5ac3-95bb-a18283d80ec9-8361956.jpg")!,
         URL(string: "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4")!,
         URL(string: "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4")!,
