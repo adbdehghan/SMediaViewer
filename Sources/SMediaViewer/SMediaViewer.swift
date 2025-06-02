@@ -135,58 +135,157 @@ public final class MediaView: UIView {
         }
     }
     
-    private func setupVideo(for url: URL) {
-        let isHLSStream = isHLS(url: url)
-        let videoAssetURL: URL
-        var usingResourceLoader = false
-        
-        if isHLSStream {
-            if let localHLSURL = HLSAssetManager.shared.getLocalAssetURL(for: url) {
-                videoAssetURL = localHLSURL
-                // print("ℹ️ MediaView: Using PRELOADED HLS: \(url.lastPathComponent) from \(localHLSURL.path)")
+    // MARK: - Asynchronous Video Setup
+        private func setupVideo(for url: URL) {
+            // Since setup is now async, we immediately update the state to reflect the intended URL,
+            // preventing race conditions if user scrolls away quickly.
+            // Although the player is not ready, we "claim" this URL.
+            // The reset() call in configure() clears the old player.
+            self.currentState = .video(url: url, player: AVQueuePlayer(), item: AVPlayerItem(url: url), looper: nil, isHLS: false) // Temporary placeholder state
+
+            let isHLSStream = isHLS(url: url)
+            var videoAssetURL: URL
+            var usingResourceLoader = false
+
+            if isHLSStream {
+                if let localHLSURL = HLSAssetManager.shared.getLocalAssetURL(for: url) {
+                    videoAssetURL = localHLSURL
+                } else {
+                    videoAssetURL = url
+                }
+                usingResourceLoader = false
             } else {
-                videoAssetURL = url // Stream directly
-                // print("ℹ️ MediaView: Streaming HLS directly: \(url.lastPathComponent)")
+                guard let customSchemeURL = VideoCacheManager.shared.assetURL(for: url) else {
+                    displayErrorIcon(); return
+                }
+                videoAssetURL = customSchemeURL
+                usingResourceLoader = true
             }
-            // For HLS (preloaded or direct stream), we generally DO NOT use the custom resource loader.
-            // AVPlayer handles HLS manifests and segment loading.
-            usingResourceLoader = false
-        } else { // MP4 or other direct video file
-            guard let customSchemeURL = VideoCacheManager.shared.assetURL(for: url) else {
-                print("❌ MediaView: Could not get custom scheme URL for MP4: \(url.lastPathComponent)")
-                displayErrorIcon()
-                return
+               
+            let asset = AVURLAsset(url: videoAssetURL)
+            
+            if usingResourceLoader {
+                asset.resourceLoader.setDelegate(VideoCacheManager.shared, queue: resourceLoaderDelegateQueue)
             }
-            videoAssetURL = customSchemeURL
-            usingResourceLoader = true // Use resource loader for MP4 caching
-            // print("ℹ️ MediaView: Using VideoCacheManager (MP4 via custom scheme): \(url.lastPathComponent)")
+            
+            // Asynchronously load the "playable" key to ensure the asset is valid before use.
+            let requiredAssetKeys = ["playable", "duration"]
+            asset.loadValuesAsynchronously(forKeys: requiredAssetKeys) { [weak self] in
+                guard let self = self else { return }
+
+                // Switch to the main thread to handle the results and update the UI
+                DispatchQueue.main.async {
+                    // Verify that the view hasn't been reconfigured for a different URL while we were loading.
+                    guard case .video(let currentConfigURL, _, _, _, _) = self.currentState, currentConfigURL == url else {
+                        print("ℹ️ Asset loaded for \(url.lastPathComponent), but view has been reconfigured. Aborting setup.")
+                        return
+                    }
+
+                    var error: NSError? = nil
+                    let status = asset.statusOfValue(forKey: "playable", error: &error)
+
+                    switch status {
+                    case .loaded:
+                        // The asset is playable, we can now create the player item and the player.
+                        self.finishVideoSetup(with: asset, for: url, isHLS: isHLSStream)
+
+                    case .failed:
+                        // The asset failed to load. This can happen if the local file is corrupt.
+                        print("❌ Asset for \(url.lastPathComponent) is NOT PLAYABLE. Error: \(error?.localizedDescription ?? "Unknown error")")
+                        self.displayErrorIcon()
+
+                    case .cancelled:
+                        // Loading was cancelled, likely because we called reset().
+                        print("ℹ️ Asset loading was cancelled for \(url.lastPathComponent).")
+                    
+                    default: // .unknown, .loading
+                        print("❔ Asset for \(url.lastPathComponent) has an unknown playable status.")
+                        break
+                    }
+                }
+            }
         }
-        
-        let asset = AVURLAsset(url: videoAssetURL)
-        if usingResourceLoader {
-            asset.resourceLoader.setDelegate(VideoCacheManager.shared, queue: resourceLoaderDelegateQueue)
+
+        // This new helper function completes the setup on the main thread once the asset is confirmed to be playable.
+        private func finishVideoSetup(with asset: AVAsset, for url: URL, isHLS: Bool) {
+            let playerItem = AVPlayerItem(asset: asset)
+            // Add KVO observer *after* confirming the asset is playable.
+            playerItem.addObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), options: [.old, .new], context: KVO.playerItemStatusContext)
+
+            let queuePlayer = AVQueuePlayer(playerItem: playerItem)
+            var playerLooper: AVPlayerLooper? = nil
+            if !isHLS {
+                playerLooper = AVPlayerLooper(player: queuePlayer, templateItem: playerItem)
+            }
+
+            self.imageView.isHidden = true
+            if self.playerLayer == nil {
+                self.playerLayer = AVPlayerLayer(player: queuePlayer)
+                self.playerLayer!.videoGravity = .resizeAspectFill
+                self.layer.insertSublayer(self.playerLayer!, at: 0)
+            } else {
+                self.playerLayer?.player = queuePlayer
+            }
+            self.playerLayer!.frame = self.bounds
+            self.playerLayer!.isHidden = false
+
+            queuePlayer.volume = 0
+            // Update the final state with the fully configured player components.
+            self.currentState = .video(url: url, player: queuePlayer, item: playerItem, looper: playerLooper, isHLS: isHLS)
         }
-        
-        let playerItem = AVPlayerItem(asset: asset)
-        playerItem.addObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), options: [.old, .new], context: KVO.playerItemStatusContext)
-        
-        let queuePlayer = AVQueuePlayer(playerItem: playerItem)
-        var playerLooper: AVPlayerLooper? = nil
-        if !isHLSStream { // Looping typically makes more sense for short MP4s, less for HLS streams/VOD
-            playerLooper = AVPlayerLooper(player: queuePlayer, templateItem: playerItem)
-        }
-        
-        imageView.isHidden = true
-        if playerLayer == nil {
-            playerLayer = AVPlayerLayer(player: queuePlayer)
-            playerLayer!.videoGravity = .resizeAspectFill
-            layer.insertSublayer(playerLayer!, at: 0)
-        } else { playerLayer?.player = queuePlayer }
-        playerLayer!.frame = bounds; playerLayer!.isHidden = false
-        
-        queuePlayer.volume = 0
-        currentState = .video(url: url, player: queuePlayer, item: playerItem, looper: playerLooper, isHLS: isHLSStream)
-    }
+    
+//    private func setupVideo(for url: URL) {
+//        let isHLSStream = isHLS(url: url)
+//        let videoAssetURL: URL
+//        var usingResourceLoader = false
+//        
+//        if isHLSStream {
+//            if let localHLSURL = HLSAssetManager.shared.getLocalAssetURL(for: url) {
+//                videoAssetURL = localHLSURL
+//                // print("ℹ️ MediaView: Using PRELOADED HLS: \(url.lastPathComponent) from \(localHLSURL.path)")
+//            } else {
+//                videoAssetURL = url // Stream directly
+//                // print("ℹ️ MediaView: Streaming HLS directly: \(url.lastPathComponent)")
+//            }
+//            // For HLS (preloaded or direct stream), we generally DO NOT use the custom resource loader.
+//            // AVPlayer handles HLS manifests and segment loading.
+//            usingResourceLoader = false
+//        } else { // MP4 or other direct video file
+//            guard let customSchemeURL = VideoCacheManager.shared.assetURL(for: url) else {
+//                print("❌ MediaView: Could not get custom scheme URL for MP4: \(url.lastPathComponent)")
+//                displayErrorIcon()
+//                return
+//            }
+//            videoAssetURL = customSchemeURL
+//            usingResourceLoader = true // Use resource loader for MP4 caching
+//            // print("ℹ️ MediaView: Using VideoCacheManager (MP4 via custom scheme): \(url.lastPathComponent)")
+//        }
+//        
+//        let asset = AVURLAsset(url: videoAssetURL)
+//        if usingResourceLoader {
+//            asset.resourceLoader.setDelegate(VideoCacheManager.shared, queue: resourceLoaderDelegateQueue)
+//        }
+//        
+//        let playerItem = AVPlayerItem(asset: asset)
+//        playerItem.addObserver(self, forKeyPath: #keyPath(AVPlayerItem.status), options: [.old, .new], context: KVO.playerItemStatusContext)
+//        
+//        let queuePlayer = AVQueuePlayer(playerItem: playerItem)
+//        var playerLooper: AVPlayerLooper? = nil
+//        if !isHLSStream { // Looping typically makes more sense for short MP4s, less for HLS streams/VOD
+//            playerLooper = AVPlayerLooper(player: queuePlayer, templateItem: playerItem)
+//        }
+//        
+//        imageView.isHidden = true
+//        if playerLayer == nil {
+//            playerLayer = AVPlayerLayer(player: queuePlayer)
+//            playerLayer!.videoGravity = .resizeAspectFill
+//            layer.insertSublayer(playerLayer!, at: 0)
+//        } else { playerLayer?.player = queuePlayer }
+//        playerLayer!.frame = bounds; playerLayer!.isHidden = false
+//        
+//        queuePlayer.volume = 0
+//        currentState = .video(url: url, player: queuePlayer, item: playerItem, looper: playerLooper, isHLS: isHLSStream)
+//    }
     
     // MARK: - KVO
     public override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {

@@ -49,11 +49,11 @@ struct ContentView: View {
         MediaItem(id: URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8")!, username: "apple_bipbop_ts", videoURL: URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8")!),
         MediaItem(id: URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!, username: "mux_test_x36", videoURL: URL(string: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8")!),
         MediaItem(id: URL(string: "https://d2zihajmogu5jn.cloudfront.net/bipbop-advanced/bipbop_16x9_variant.m3u8")!, username: "cloudfront_bipbop_var", videoURL: URL(string: "https://d2zihajmogu5jn.cloudfront.net/bipbop-advanced/bipbop_16x9_variant.m3u8")!),
-        MediaItem(id: URL(string: "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8")!, username: "tears_steel_hls_unified", videoURL: URL(string: "https://demo.unified-streaming.com/k8s/features/stable/video/tears-of-steel/tears-of-steel.ism/.m3u8")!),
+ 
         MediaItem(id: URL(string: "https://cdn.jwplayer.com/manifests/pZxWPRg4.m3u8")!, username: "jwplayer_manifest_1", videoURL: URL(string: "https://cdn.jwplayer.com/manifests/pZxWPRg4.m3u8")!),
         MediaItem(id: URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8")!, username: "apple_bipbop_fmp4", videoURL: URL(string: "https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_fmp4/master.m3u8")!),
         MediaItem(id: URL(string: "https://bitdash-a.akamaihd.net/content/MI201109210084_1/m3u8s/f08e80da-bf1d-4e3d-8899-f0f6155f6efa.m3u8")!, username: "bitdash_sintel_hls", videoURL: URL(string: "https://bitdash-a.akamaihd.net/content/MI201109210084_1/m3u8s/f08e80da-bf1d-4e3d-8899-f0f6155f6efa.m3u8")!),
-        MediaItem(id: URL(string: "https://test-streams.mux.dev/pts_shift/master.m3u8")!, username: "mux_pts_shift", videoURL: URL(string: "https://test-streams.mux.dev/pts_shift/master.m3u8")!),    
+        MediaItem(id: URL(string: "https://test-streams.mux.dev/pts_shift/master.m3u8")!, username: "mux_pts_shift", videoURL: URL(string: "https://test-streams.mux.dev/pts_shift/master.m3u8")!),
         MediaItem(id: URL(string: "https://bitmovin-a.akamaihd.net/content/dataset/multi-codec/hevc/stream_fmp4.m3u8")!, username: "bitmovin_hevc_fmp4", videoURL: URL(string: "https://bitmovin-a.akamaihd.net/content/dataset/multi-codec/hevc/stream_fmp4.m3u8")!),
 
         // MP4 Videos (15)
