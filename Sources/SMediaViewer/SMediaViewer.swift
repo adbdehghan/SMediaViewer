@@ -229,6 +229,7 @@ public final class MediaView: UIView {
           for case let fileURL as URL in enumerator {
               do {
                   let attributes = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
+                  print("Error reading attributes for \(fileURL)")
                   if attributes.isRegularFile == true && fileURL.pathExtension.lowercased() == "m3u8" {
                       return fileURL
                   }
