@@ -159,7 +159,7 @@ final public class HLSAssetManager: NSObject, AVAssetDownloadDelegate, @unchecke
     }
 
     // MARK: - AVAssetDownloadDelegate
-    func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didFinishDownloadingTo location: URL) {
+    public func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didFinishDownloadingTo location: URL) {
         let originalURL = assetDownloadTask.urlAsset.url // This is the original remote HLS URL
         
         accessQueue.async { [weak self] in
@@ -191,7 +191,7 @@ final public class HLSAssetManager: NSObject, AVAssetDownloadDelegate, @unchecke
         }
     }
     
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+    public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let assetDownloadTask = task as? AVAssetDownloadTask else { return }
         let originalURL = assetDownloadTask.urlAsset.url
 
@@ -209,7 +209,7 @@ final public class HLSAssetManager: NSObject, AVAssetDownloadDelegate, @unchecke
         }
     }
     
-    func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didLoad timeRange: CMTimeRange, totalTimeRangesLoaded: [NSValue], timeRangeExpectedToLoad: CMTimeRange) {
+    public func urlSession(_ session: URLSession, assetDownloadTask: AVAssetDownloadTask, didLoad timeRange: CMTimeRange, totalTimeRangesLoaded: [NSValue], timeRangeExpectedToLoad: CMTimeRange) {
         let percentComplete = totalTimeRangesLoaded.reduce(0.0) { $0 + $1.timeRangeValue.duration.seconds } / timeRangeExpectedToLoad.duration.seconds * 100
         let originalURL = assetDownloadTask.urlAsset.url
         if !percentComplete.isNaN && percentComplete.isFinite {
