@@ -15,7 +15,7 @@
 import AVFoundation
 import UniformTypeIdentifiers // For UTType constants
 
-final class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendable {
+final public class VideoCacheManager: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendable {
     static let shared = VideoCacheManager()
     
     let customScheme = "cachingvideoscheme" // Custom scheme
